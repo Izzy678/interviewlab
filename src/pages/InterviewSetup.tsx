@@ -14,6 +14,12 @@ import {
   Building2,
   FolderGit2,
   User,
+  Sparkles,
+  ListChecks,
+  TrendingUp,
+  Wand2,
+  Globe,
+  Cpu,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -38,7 +44,25 @@ interface ParsedResume {
   parsed_education: string[];
 }
 
+interface ParsedJobDescription {
+  role: string;
+  seniority: string;
+  required_skills: string[];
+  nice_to_have_skills: string[];
+  responsibilities: string[];
+}
+
 type UploadStatus = "idle" | "uploading" | "parsing" | "success" | "error";
+type JdStatus = "idle" | "analyzing" | "success" | "error";
+type UrlStatus = "idle" | "importing" | "success" | "error";
+
+interface JobUrlResult {
+  jobDescription: string;
+  companyName: string;
+  companyOverview: string;
+  techStack: string[];
+  parsed: ParsedJobDescription;
+}
 
 export default function InterviewSetup() {
   const navigate = useNavigate();
@@ -54,6 +78,16 @@ export default function InterviewSetup() {
   const [uploadError, setUploadError] = useState("");
   const [parsedResume, setParsedResume] = useState<ParsedResume | null>(null);
   const [fileName, setFileName] = useState("");
+
+  // JD analysis state
+  const [jdStatus, setJdStatus] = useState<JdStatus>("idle");
+  const [jdError, setJdError] = useState("");
+  const [parsedJd, setParsedJd] = useState<ParsedJobDescription | null>(null);
+
+  // Job URL import state
+  const [urlStatus, setUrlStatus] = useState<UrlStatus>("idle");
+  const [urlError, setUrlError] = useState("");
+  const [urlResult, setUrlResult] = useState<JobUrlResult | null>(null);
 
   const handleFileSelect = async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -156,6 +190,115 @@ export default function InterviewSetup() {
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
+  };
+
+  const handleAnalyzeJobDescription = async () => {
+    const text = jobDescription.trim();
+    if (!text) return;
+
+    setJdStatus("analyzing");
+    setJdError("");
+
+    try {
+      if (!user) throw new Error("You must be signed in to analyze a job description.");
+
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData?.session?.access_token;
+      if (!token) throw new Error("No auth session found.");
+
+      const response = await fetch(
+        "https://edbytsuykbezfvniwdyd.supabase.co/functions/v1/parse-job-description",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ rawText: text }),
+        }
+      );
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.details || result.error || "Failed to analyze job description");
+      }
+
+      setParsedJd(result.parsed);
+      setJdStatus("success");
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Something went wrong.";
+      setJdError(message);
+      setJdStatus("error");
+    }
+  };
+
+  const resetJdAnalysis = () => {
+    setJdStatus("idle");
+    setJdError("");
+    setParsedJd(null);
+  };
+
+  const handleImportFromUrl = async () => {
+    const url = jobUrl.trim();
+    if (!url) return;
+
+    setUrlStatus("importing");
+    setUrlError("");
+
+    try {
+      if (!user) throw new Error("You must be signed in to import a job URL.");
+
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData?.session?.access_token;
+      if (!token) throw new Error("No auth session found.");
+
+      const response = await fetch(
+        "https://edbytsuykbezfvniwdyd.supabase.co/functions/v1/fetch-job-url",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ url }),
+        }
+      );
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.details || result.error || "Failed to import job URL");
+      }
+
+      const data = result as JobUrlResult;
+
+      // Populate the job description textarea
+      setJobDescription(data.jobDescription || "");
+
+      // Store the full URL result for display
+      setUrlResult(data);
+
+      // Auto-populate JD analysis if the parsed fields are available
+      if (data.parsed && (data.parsed.role || data.parsed.required_skills.length > 0)) {
+        setParsedJd(data.parsed);
+        setJdStatus("success");
+      }
+
+      setUrlStatus("success");
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Something went wrong.";
+      setUrlError(message);
+      setUrlStatus("error");
+    }
+  };
+
+  const resetUrlImport = () => {
+    setUrlStatus("idle");
+    setUrlError("");
+    setUrlResult(null);
   };
 
   const handleStart = () => {
@@ -356,41 +499,267 @@ export default function InterviewSetup() {
       {/* Job Description */}
       <Card>
         <CardHeader>
-          <CardTitle>Job Description</CardTitle>
+          <CardTitle>
+            Job Description
+            {jdStatus === "success" && (
+              <span className="ml-2 inline-flex items-center gap-1 text-sm font-normal text-emerald-600">
+                <CheckCircle2 className="h-4 w-4" />
+                Analyzed
+              </span>
+            )}
+          </CardTitle>
           <CardDescription>
             Paste the job description you're preparing for.
           </CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
           <textarea
             value={jobDescription}
             onChange={(e) => setJobDescription(e.target.value)}
             className="w-full min-h-[120px] rounded-lg border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-y"
             placeholder="Paste the job description here..."
           />
+
+          {jdStatus === "analyzing" ? (
+            <div className="flex items-center gap-2 rounded-lg border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 text-primary animate-spin" />
+              Analyzing job description with AI...
+            </div>
+          ) : jdStatus === "error" ? (
+            <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+              <AlertCircle className="h-4 w-4 shrink-0" />
+              <span>{jdError}</span>
+            </div>
+          ) : null}
+
+          {jdStatus === "success" && parsedJd ? (
+            <div className="space-y-4">
+              {/* Analyzed data summary */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {parsedJd.role && (
+                  <div className="flex items-start gap-2 rounded-lg border bg-background p-3">
+                    <Briefcase className="h-4 w-4 text-primary mt-0.5 shrink-0" />
+                    <div className="min-w-0">
+                      <p className="text-xs text-muted-foreground">Role</p>
+                      <p className="text-sm font-medium truncate">
+                        {parsedJd.role}
+                      </p>
+                    </div>
+                  </div>
+                )}
+                {parsedJd.seniority && (
+                  <div className="flex items-start gap-2 rounded-lg border bg-background p-3">
+                    <TrendingUp className="h-4 w-4 text-primary mt-0.5 shrink-0" />
+                    <div className="min-w-0">
+                      <p className="text-xs text-muted-foreground">Seniority</p>
+                      <p className="text-sm font-medium truncate">
+                        {parsedJd.seniority}
+                      </p>
+                    </div>
+                  </div>
+                )}
+                {parsedJd.required_skills &&
+                  parsedJd.required_skills.length > 0 && (
+                    <div className="flex items-start gap-2 rounded-lg border bg-background p-3 sm:col-span-2">
+                      <Star className="h-4 w-4 text-primary mt-0.5 shrink-0" />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs text-muted-foreground mb-1">
+                          Required Skills
+                        </p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {parsedJd.required_skills.map((skill, i) => (
+                            <span
+                              key={i}
+                              className="inline-block rounded-full bg-primary/10 px-2.5 py-0.5 text-xs font-medium text-primary"
+                            >
+                              {skill}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                {parsedJd.nice_to_have_skills &&
+                  parsedJd.nice_to_have_skills.length > 0 && (
+                    <div className="flex items-start gap-2 rounded-lg border bg-background p-3 sm:col-span-2">
+                      <Sparkles className="h-4 w-4 text-muted-foreground mt-0.5 shrink-0" />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs text-muted-foreground mb-1">
+                          Nice-to-have Skills
+                        </p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {parsedJd.nice_to_have_skills.map((skill, i) => (
+                            <span
+                              key={i}
+                              className="inline-block rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground"
+                            >
+                              {skill}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                {parsedJd.responsibilities &&
+                  parsedJd.responsibilities.length > 0 && (
+                    <div className="flex items-start gap-2 rounded-lg border bg-background p-3 sm:col-span-2">
+                      <ListChecks className="h-4 w-4 text-primary mt-0.5 shrink-0" />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs text-muted-foreground mb-1">
+                          Responsibilities
+                        </p>
+                        <ul className="text-sm list-disc list-inside space-y-0.5">
+                          {parsedJd.responsibilities.map((r, i) => (
+                            <li key={i}>{r}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    </div>
+                  )}
+              </div>
+              <button
+                onClick={resetJdAnalysis}
+                className="text-xs text-muted-foreground hover:text-foreground underline"
+              >
+                Analyze again
+              </button>
+            </div>
+          ) : (
+            <Button
+              onClick={handleAnalyzeJobDescription}
+              disabled={!jobDescription.trim()}
+              className="gap-2"
+            >
+              <Wand2 className="h-4 w-4" />
+              Analyze Job Description
+            </Button>
+          )}
         </CardContent>
       </Card>
 
-      {/* Job URL */}
+      {/* Job Posting URL */}
       <Card>
         <CardHeader>
-          <CardTitle>Job Posting URL</CardTitle>
+          <CardTitle>
+            Job Posting URL
+            {urlStatus === "success" && (
+              <span className="ml-2 inline-flex items-center gap-1 text-sm font-normal text-emerald-600">
+                <CheckCircle2 className="h-4 w-4" />
+                Imported
+              </span>
+            )}
+          </CardTitle>
           <CardDescription>
-            Optional — link to the job posting so the AI can pull in more
-            context.
+            Paste a job posting URL and the AI will fetch the details
+            automatically.
           </CardDescription>
         </CardHeader>
-        <CardContent>
-          <div className="relative">
-            <Link className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <input
-              type="url"
-              value={jobUrl}
-              onChange={(e) => setJobUrl(e.target.value)}
-              placeholder="https://example.com/jobs/software-engineer"
-              className="w-full rounded-lg border border-input bg-background pl-9 pr-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            />
-          </div>
+        <CardContent className="space-y-4">
+          {/* URL Input + Import Button */}
+          {(urlStatus === "idle" || urlStatus === "error") && (
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <Link className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <input
+                  type="url"
+                  value={jobUrl}
+                  onChange={(e) => setJobUrl(e.target.value)}
+                  placeholder="https://example.com/jobs/software-engineer"
+                  className="w-full rounded-lg border border-input bg-background pl-9 pr-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                />
+              </div>
+              <Button
+                onClick={handleImportFromUrl}
+                disabled={!jobUrl.trim()}
+                className="gap-2 shrink-0"
+              >
+                <Globe className="h-4 w-4" />
+                Import
+              </Button>
+            </div>
+          )}
+
+          {/* URL error */}
+          {urlStatus === "error" && urlError && (
+            <div className="flex items-center justify-between gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="h-4 w-4 shrink-0" />
+                <span>{urlError}</span>
+              </div>
+              <button
+                onClick={() => setUrlStatus("idle")}
+                className="text-xs underline hover:text-foreground shrink-0"
+              >
+                Try again
+              </button>
+            </div>
+          )}
+
+          {/* Importing state */}
+          {urlStatus === "importing" && (
+            <div className="flex items-center gap-2 rounded-lg border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 text-primary animate-spin" />
+              <span>Fetching job details from URL...</span>
+            </div>
+          )}
+
+          {/* Import results */}
+          {urlStatus === "success" && urlResult && (
+            <div className="space-y-3">
+              {/* Company info */}
+              {urlResult.companyName && (
+                <div className="flex items-start gap-2 rounded-lg border bg-background p-3">
+                  <Building2 className="h-4 w-4 text-primary mt-0.5 shrink-0" />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs text-muted-foreground">Company</p>
+                    <p className="text-sm font-medium">{urlResult.companyName}</p>
+                    {urlResult.companyOverview && (
+                      <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
+                        {urlResult.companyOverview}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Tech stack */}
+              {urlResult.techStack.length > 0 && (
+                <div className="flex items-start gap-2 rounded-lg border bg-background p-3">
+                  <Cpu className="h-4 w-4 text-primary mt-0.5 shrink-0" />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs text-muted-foreground mb-1.5">
+                      Tech Stack
+                    </p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {urlResult.techStack.map((tech, i) => (
+                        <span
+                          key={i}
+                          className="inline-block rounded-full bg-primary/5 border border-primary/15 px-2.5 py-0.5 text-xs font-medium text-primary"
+                        >
+                          {tech}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Action buttons */}
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={resetUrlImport}
+                  className="text-xs text-muted-foreground hover:text-foreground underline"
+                >
+                  Import different URL
+                </button>
+                {urlResult.jobDescription && (
+                  <span className="text-xs text-muted-foreground">
+                    Job description filled in below
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
         </CardContent>
       </Card>
 
