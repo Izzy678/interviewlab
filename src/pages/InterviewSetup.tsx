@@ -20,6 +20,7 @@ import {
   Wand2,
   Globe,
   Cpu,
+  BookOpen,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -88,6 +89,10 @@ export default function InterviewSetup() {
   const [urlStatus, setUrlStatus] = useState<UrlStatus>("idle");
   const [urlError, setUrlError] = useState("");
   const [urlResult, setUrlResult] = useState<JobUrlResult | null>(null);
+
+  // Plan generation state
+  const [planStatus, setPlanStatus] = useState<"idle" | "generating" | "error">("idle");
+  const [planError, setPlanError] = useState("");
 
   const handleFileSelect = async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -299,6 +304,69 @@ export default function InterviewSetup() {
     setUrlStatus("idle");
     setUrlError("");
     setUrlResult(null);
+  };
+
+  const handleGeneratePlan = async () => {
+    setPlanStatus("generating");
+    setPlanError("");
+
+    try {
+      if (!user) throw new Error("You must be signed in to generate an interview plan.");
+
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData?.session?.access_token;
+      if (!token) throw new Error("No auth session found.");
+
+      const resumeData = parsedResume
+        ? {
+            parsed_name: parsedResume.parsed_name,
+            parsed_years_experience: parsedResume.parsed_years_experience,
+            parsed_skills: parsedResume.parsed_skills,
+            parsed_companies: parsedResume.parsed_companies,
+            parsed_projects: parsedResume.parsed_projects,
+            parsed_education: parsedResume.parsed_education,
+          }
+        : undefined;
+
+      const jobData = parsedJd
+        ? {
+            role: parsedJd.role,
+            seniority: parsedJd.seniority,
+            required_skills: parsedJd.required_skills,
+            nice_to_have_skills: parsedJd.nice_to_have_skills,
+            responsibilities: parsedJd.responsibilities,
+          }
+        : undefined;
+
+      const response = await fetch(
+        "https://edbytsuykbezfvniwdyd.supabase.co/functions/v1/generate-interview-plan",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            resumeData,
+            jobData,
+            targetLevel: selectedLevel,
+          }),
+        }
+      );
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.details || result.error || "Failed to generate interview plan");
+      }
+
+      navigate("/plan", { state: { plan: result, fromSetup: true } });
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Something went wrong.";
+      setPlanError(message);
+      setPlanStatus("error");
+    }
   };
 
   const handleStart = () => {
@@ -790,17 +858,73 @@ export default function InterviewSetup() {
         </CardContent>
       </Card>
 
-      {/* Start Button */}
-      <div className="flex justify-end">
-        <Button
-          size="lg"
-          onClick={handleStart}
-          className="gap-2"
-        >
-          <Send className="h-4 w-4" />
-          Start Interview
-        </Button>
-      </div>
+      {/* Generate Interview Plan */}
+      <Card>
+        <CardHeader>
+          <CardTitle>
+            Interview Plan
+            {planStatus === "generating" && (
+              <span className="ml-2 inline-flex items-center gap-1 text-sm font-normal text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Generating...
+              </span>
+            )}
+          </CardTitle>
+          <CardDescription>
+            Generate a tailored interview plan with questions based on your
+            resume and job description.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {/* Plan generation error */}
+          {planStatus === "error" && planError && (
+            <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+              <AlertCircle className="h-4 w-4 shrink-0" />
+              <span>{planError}</span>
+            </div>
+          )}
+
+          {/* Generating state */}
+          {planStatus === "generating" ? (
+            <div className="rounded-lg border bg-muted/40 p-8 text-center">
+              <Loader2 className="h-8 w-8 mx-auto text-primary mb-4 animate-spin" />
+              <p className="text-sm font-medium">
+                Generating your interview plan...
+              </p>
+              <p className="text-xs text-muted-foreground mt-1">
+                The AI is creating recruiter, behavioral, technical, and
+                follow-up questions tailored to your profile.
+              </p>
+            </div>
+          ) : (
+            <div className="flex flex-col sm:flex-row gap-3">
+              <Button
+                size="lg"
+                onClick={handleGeneratePlan}
+                disabled={
+                  !parsedResume && !parsedJd
+                }
+                className="gap-2 flex-1"
+              >
+                <BookOpen className="h-4 w-4" />
+                Generate Interview Plan
+              </Button>
+              <Button
+                variant="outline"
+                size="lg"
+                onClick={handleStart}
+                disabled={
+                  !parsedResume && !parsedJd
+                }
+                className="gap-2"
+              >
+                <Send className="h-4 w-4" />
+                Skip to Interview
+              </Button>
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }

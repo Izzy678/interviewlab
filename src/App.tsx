@@ -9,6 +9,7 @@ import Dashboard from "@/pages/Dashboard";
 import InterviewSetup from "@/pages/InterviewSetup";
 import InterviewSession from "@/pages/InterviewSession";
 import InterviewReport from "@/pages/InterviewReport";
+import InterviewPlan from "@/pages/InterviewPlan";
 
 export default function App() {
   return (
@@ -25,6 +26,7 @@ export default function App() {
             <Route element={<AppLayout />}>
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/setup" element={<InterviewSetup />} />
+              <Route path="/plan" element={<InterviewPlan />} />
               <Route path="/session/:id" element={<InterviewSession />} />
               <Route path="/report/:id" element={<InterviewReport />} />
             </Route>
