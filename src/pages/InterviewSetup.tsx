@@ -117,7 +117,7 @@ export default function InterviewSetup() {
       const result = await response.json();
 
       if (!response.ok) {
-        throw new Error(result.error || "Failed to parse resume");
+        throw new Error(result.details || result.error || "Failed to parse resume");
       }
 
       setParsedResume(result.resume);

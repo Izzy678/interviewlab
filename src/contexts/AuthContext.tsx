@@ -53,13 +53,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // Listen for auth state changes
   useEffect(() => {
+    let cancelled = false;
+
     // Get initial session
     supabase.auth.getSession().then(({ data: { session } }) => {
+      if (cancelled) return;
       const user = session?.user ?? null;
       setState((prev) => ({ ...prev, user, loading: false }));
 
       if (user) {
-        fetchProfile(user.id);
+        fetchProfile(user.id).catch(() => {
+          // Profile fetch is best-effort — user still has a valid session
+        });
+      }
+    }).catch(() => {
+      if (!cancelled) {
+        setState((prev) => ({ ...prev, loading: false }));
       }
     });
 
@@ -71,13 +80,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setState((prev) => ({ ...prev, user }));
 
       if (user) {
-        fetchProfile(user.id);
+        fetchProfile(user.id).catch(() => {
+          // Best-effort profile fetch
+        });
       } else {
         setState((prev) => ({ ...prev, profile: null }));
       }
     });
 
-    return () => subscription.unsubscribe();
+    return () => {
+      cancelled = true;
+      subscription.unsubscribe();
+    };
   }, [fetchProfile]);
 
   const signUp = async (

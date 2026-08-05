@@ -9,6 +9,28 @@ interface ParsedResume {
   education: string[];
 }
 
+interface OpenRouterResponse {
+  choices: {
+    message: {
+      content: string;
+    };
+  }[];
+}
+
+// PostgreSQL rejects lone Unicode surrogates (e.g. \uD800) in JSON — replace them
+// with the U+FFFD replacement character so inserts never fail with
+// "unsupported Unicode escape sequence".
+function sanitizeText(value: string): string {
+  return value.replace(
+    /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|[\uDC00-\uDFFF]/g,
+    "\uFFFD"
+  );
+}
+
+function sanitizeArray(values: string[]): string[] {
+  return (values || []).map((v) => sanitizeText(String(v)));
+}
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -21,14 +43,22 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
-    const authHeader = req.headers.get("Authorization")!;
+    const authHeader = req.headers.get("Authorization");
+    if (!authHeader) {
+      return new Response(
+        JSON.stringify({ error: "Missing Authorization header" }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+    // Strip "Bearer " prefix — getUser() expects the raw JWT
+    const token = authHeader.replace("Bearer ", "");
+
     const supabase = createClient(
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
-      { global: { headers: { Authorization: authHeader } } },
     );
 
-    const { data: { user }, error: userError } = await supabase.auth.getUser();
+    const { data: { user }, error: userError } = await supabase.auth.getUser(token);
     if (userError || !user) {
       return new Response(JSON.stringify({ error: "Unauthorized" }), {
         status: 401,
@@ -55,7 +85,7 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    const rawText = extractPdfText(await fileData.arrayBuffer());
+    const rawText = sanitizeText(extractPdfText(await fileData.arrayBuffer()));
 
     if (!rawText.trim()) {
       return new Response(
@@ -64,27 +94,28 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    const parsed = await extractWithGemini(rawText);
+    const parsed = await extractWithOpenRouter(rawText);
 
     const { data: resumeRecord, error: insertError } = await supabase
       .from("resumes")
       .insert({
         user_id: user.id,
-        file_path: filePath,
-        file_name: fileName || filePath.split("/").pop() || "resume.pdf",
+        file_path: sanitizeText(filePath),
+        file_name: sanitizeText(fileName || filePath.split("/").pop() || "resume.pdf"),
         raw_text: rawText.slice(0, 10000),
-        parsed_name: parsed.name,
-        parsed_years_experience: parsed.years_experience,
-        parsed_skills: parsed.skills,
-        parsed_companies: parsed.companies,
-        parsed_projects: parsed.projects,
-        parsed_education: parsed.education,
+        parsed_name: sanitizeText(parsed.name),
+        parsed_years_experience: sanitizeText(parsed.years_experience),
+        parsed_skills: sanitizeArray(parsed.skills),
+        parsed_companies: sanitizeArray(parsed.companies),
+        parsed_projects: sanitizeArray(parsed.projects),
+        parsed_education: sanitizeArray(parsed.education),
         parsed_at: new Date().toISOString(),
       })
       .select()
       .single();
 
     if (insertError) {
+      console.error("parse-resume insert failed:", insertError.message);
       return new Response(
         JSON.stringify({ error: "Failed to save parsed resume", details: insertError.message }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
@@ -132,15 +163,18 @@ function extractPdfText(buffer: ArrayBuffer): string {
   return textChunks.join(" ");
 }
 
-async function extractWithGemini(text: string): Promise<ParsedResume> {
-  const geminiKey = Deno.env.get("GEMINI_API_KEY");
-  if (!geminiKey) {
-    throw new Error("GEMINI_API_KEY is not configured");
+async function extractWithOpenRouter(text: string): Promise<ParsedResume> {
+  const apiKey = Deno.env.get("OPENROUTER_API_KEY");
+  if (!apiKey) {
+    throw new Error("OPENROUTER_API_KEY is not configured");
   }
 
-  const systemInstruction = "You are a resume parsing assistant. Extract structured data from resumes. Always respond with valid JSON only.";
+  const model = Deno.env.get("OPENROUTER_MODEL") || "openrouter/free";
 
-  const prompt = [
+  const systemMessage =
+    "You are a resume parsing assistant. Extract structured data from resumes. Always respond with valid JSON only, no markdown formatting.";
+
+  const userMessage = [
     "Extract structured information from the following resume text.",
     "",
     "Return ONLY valid JSON with these exact fields:",
@@ -160,42 +194,49 @@ async function extractWithGemini(text: string): Promise<ParsedResume> {
   ].join("\n");
 
   const response = await fetch(
-    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+    "https://openrouter.ai/api/v1/chat/completions",
     {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-goog-api-key": geminiKey,
+        "Authorization": `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        contents: [{
-          role: "user",
-          parts: [{ text: prompt }],
-        }],
-        systemInstruction: {
-          parts: [{ text: systemInstruction }],
-        },
-        generationConfig: {
-          temperature: 0.1,
-          maxOutputTokens: 1000,
-        },
+        model,
+        messages: [
+          { role: "system", content: systemMessage },
+          { role: "user", content: userMessage },
+        ],
+        temperature: 0.1,
+        max_tokens: 1000,
       }),
     },
   );
 
   if (!response.ok) {
     const errBody = await response.text();
-    throw new Error("Gemini API error: " + response.status + " - " + errBody);
+    throw new Error("OpenRouter API error: " + response.status + " - " + errBody);
   }
 
-  const data = await response.json();
-  const content = data.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
+  const data: OpenRouterResponse = await response.json();
+  const content = data.choices?.[0]?.message?.content || "{}";
 
   const jsonStr = content
     .replace(/```json\n?/g, "")
     .replace(/```\n?/g, "")
     .trim();
-  const parsed: ParsedResume = JSON.parse(jsonStr);
+
+  let parsed: ParsedResume;
+  try {
+    parsed = JSON.parse(jsonStr);
+  } catch {
+    // Model sometimes wraps the JSON in prose — fall back to the first {...} block
+    const match = jsonStr.match(/\{[\s\S]*\}/);
+    if (!match) {
+      throw new Error("OpenRouter returned invalid JSON: " + jsonStr.slice(0, 200));
+    }
+    parsed = JSON.parse(match[0]);
+  }
 
   return {
     name: parsed.name || "",
