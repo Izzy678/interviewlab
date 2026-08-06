@@ -366,7 +366,38 @@ export default function InterviewSetup() {
   };
 
   const handleStart = () => {
-    navigate("/session/1");
+    // Build a minimal plan so the interviewer can improvise questions from
+    // the resume + job description context without a full generated plan.
+    const fallbackPlan = {
+      candidate_name: parsedResume?.parsed_name || "",
+      target_role: parsedJd?.role || "",
+      target_seniority: parsedJd?.seniority || "Mid Level",
+      overall_difficulty: "Medium",
+      sections: {
+        recruiter_questions: {
+          title: "Recruiter / Screening Questions",
+          description: "",
+          questions: [],
+        },
+        behavioral_questions: {
+          title: "Behavioral Questions",
+          description: "",
+          questions: [],
+        },
+        technical_questions: {
+          title: "Technical Questions",
+          description: "",
+          questions: [],
+        },
+        follow_up_questions: {
+          title: "Follow-Up Questions",
+          description: "",
+          questions: [],
+        },
+      },
+      preparation_tips: [],
+    };
+    navigate("/session/1", { state: { plan: fallbackPlan } });
   };
 
   return (

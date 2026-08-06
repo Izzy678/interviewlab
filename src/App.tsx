@@ -27,9 +27,10 @@ export default function App() {
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/setup" element={<InterviewSetup />} />
               <Route path="/plan" element={<InterviewPlan />} />
-              <Route path="/session/:id" element={<InterviewSession />} />
               <Route path="/report/:id" element={<InterviewReport />} />
             </Route>
+            {/* Full-screen immersive voice interview — no app header */}
+            <Route path="/session/:id" element={<InterviewSession />} />
           </Route>
         </Routes>
       </AuthProvider>

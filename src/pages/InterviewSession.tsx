@@ -1,382 +1,67 @@
-import { useState, useRef, useCallback, useEffect } from "react";
-import { useParams, useLocation, useNavigate, Link } from "react-router-dom";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useParams, useLocation, useNavigate } from "react-router-dom";
 import {
   Mic,
-  Square,
-  ChevronLeft,
-  ChevronRight,
+  MicOff,
+  PhoneOff,
   ArrowLeft,
+  Loader2,
   CheckCircle2,
-  Timer,
+  Send,
+  MessageSquareText,
+  Sparkles,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { EmptyState } from "@/components/common/EmptyState";
-import { supabase } from "@/lib/supabase";
+import { useSpeechRecognition } from "@/hooks/useSpeechRecognition";
+import { speak, stopSpeaking, ttsSupported } from "@/lib/tts";
+import {
+  fetchInterviewReply,
+  formatDuration,
+  type ChatMessage,
+  type InterviewPlanData,
+  type InterviewReply,
+} from "@/lib/interview";
 
 /* ── Types ─────────────────────────────────────────────── */
 
-interface InterviewQuestion {
-  id: string;
-  question: string;
-  category: "recruiter" | "behavioral" | "technical" | "follow_up";
-  difficulty: "easy" | "medium" | "hard";
-  focus_area: string;
-  expected_answer_points: string[];
-  context?: string;
+type Phase =
+  | "idle"
+  | "connecting"
+  | "speaking"
+  | "listening"
+  | "awaiting"
+  | "thinking"
+  | "concluding"
+  | "ended";
+
+/* ── Helper Components ─────────────────────────────────── */
+
+function SpeakingBars({ active }: { active: boolean }) {
+  return (
+    <span
+      className={`inline-flex items-end gap-[3px] h-4 ${
+        active ? "" : "opacity-30"
+      }`}
+      aria-hidden="true"
+    >
+      {[0, 1, 2].map((i) => (
+        <span
+          key={i}
+          className={`w-[3px] rounded-full bg-current origin-bottom ${
+            active ? "animate-speaking motion-reduce:animate-none" : ""
+          }`}
+          style={{
+            height: "100%",
+            animationDelay: active ? `${i * 0.15}s` : "0s",
+          }}
+        />
+      ))}
+    </span>
+  );
 }
 
-interface InterviewPlanSection {
-  title: string;
-  description: string;
-  questions: InterviewQuestion[];
-}
-
-interface InterviewPlanData {
-  candidate_name: string;
-  target_role: string;
-  target_seniority: string;
-  overall_difficulty: string;
-  sections: {
-    recruiter_questions: InterviewPlanSection;
-    behavioral_questions: InterviewPlanSection;
-    technical_questions: InterviewPlanSection;
-    follow_up_questions: InterviewPlanSection;
-  };
-  preparation_tips: string[];
-}
-
-/* ── Helpers ────────────────────────────────────────────── */
-
-const difficultyColors: Record<string, string> = {
-  easy: "bg-emerald-100 text-emerald-700 border-emerald-200",
-  medium: "bg-amber-100 text-amber-700 border-amber-200",
-  hard: "bg-orange-100 text-orange-700 border-orange-200",
-};
-
-const categoryLabels: Record<string, string> = {
-  recruiter: "Recruiter / Screening",
-  behavioral: "Behavioral",
-  technical: "Technical",
-  follow_up: "Follow-Up",
-};
-
-const categoryIndicatorColors: Record<string, string> = {
-  recruiter: "bg-sky-500",
-  behavioral: "bg-violet-500",
-  technical: "bg-emerald-500",
-  follow_up: "bg-amber-500",
-};
-
-function flattenQuestions(plan: InterviewPlanData): InterviewQuestion[] {
-  const order: (keyof InterviewPlanData["sections"])[] = [
-    "recruiter_questions",
-    "behavioral_questions",
-    "technical_questions",
-    "follow_up_questions",
-  ];
-  const all: InterviewQuestion[] = [];
-  for (const key of order) {
-    all.push(...plan.sections[key].questions);
-  }
-  return all;
-}
-
-/* ── Speech recognition types (Speechmatics WebSocket) ── */
-
-interface SpeechmaticsAlternative {
-  content: string;
-  confidence?: number;
-}
-
-interface SpeechmaticsResult {
-  alternatives: SpeechmaticsAlternative[];
-  start_time: number;
-  end_time: number;
-  type: "word" | "punctuation";
-}
-
-interface SpeechmaticsMessage {
-  message: string;
-  results?: SpeechmaticsResult[];
-  channel?: string;
-}
-
-/* ── Custom hook: Speechmatics-powered recognition ────── */
-
-function useSpeechRecognition() {
-  const [transcript, setTranscript] = useState("");
-  const [isListening, setIsListening] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const wsRef = useRef<WebSocket | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const audioCtxRef = useRef<AudioContext | null>(null);
-  const processorRef = useRef<ScriptProcessorNode | null>(null);
-  const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
-  const finalTranscriptRef = useRef("");
-  const interimTranscriptRef = useRef("");
-
-  /* Speechmatics works in any modern browser with mic + WebSocket support */
-  const supported =
-    typeof window !== "undefined" &&
-    typeof navigator !== "undefined" &&
-    !!navigator.mediaDevices?.getUserMedia;
-
-  const stopAudioCapture = useCallback(() => {
-    /* Disconnect & close audio graph */
-    if (processorRef.current && sourceRef.current) {
-      try {
-        processorRef.current.disconnect();
-        sourceRef.current.disconnect();
-      } catch { /* already disconnected */ }
-    }
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((t) => t.stop());
-      streamRef.current = null;
-    }
-    if (audioCtxRef.current) {
-      audioCtxRef.current.close().catch(() => {});
-      audioCtxRef.current = null;
-    }
-    processorRef.current = null;
-    sourceRef.current = null;
-  }, []);
-
-  const closeWs = useCallback(() => {
-    if (wsRef.current) {
-      try {
-        /* Signal end-of-stream before closing */
-        if (wsRef.current.readyState === WebSocket.OPEN) {
-          wsRef.current.send(
-            JSON.stringify({ message: "EndOfStream", last_seq_no: null }),
-          );
-        }
-      } catch { /* ignore */ }
-      try {
-        wsRef.current.close();
-      } catch { /* ignore */ }
-      wsRef.current = null;
-    }
-  }, []);
-
-  const stop = useCallback(() => {
-    closeWs();
-    stopAudioCapture();
-    setIsListening(false);
-    /* Merge any remaining interim into final */
-    if (interimTranscriptRef.current) {
-      finalTranscriptRef.current +=
-        (finalTranscriptRef.current ? " " : "") + interimTranscriptRef.current;
-      setTranscript(finalTranscriptRef.current);
-      interimTranscriptRef.current = "";
-    }
-  }, [closeWs, stopAudioCapture]);
-
-  const reset = useCallback(() => {
-    stop();
-    finalTranscriptRef.current = "";
-    interimTranscriptRef.current = "";
-    setTranscript("");
-    setError(null);
-  }, [stop]);
-
-  const start = useCallback(async () => {
-    if (!supported) {
-      setError("Voice input is not available in this browser.");
-      return;
-    }
-
-    /* Clean up any previous session */
-    reset();
-    finalTranscriptRef.current = "";
-    interimTranscriptRef.current = "";
-
-    try {
-      /* 1. Fetch a temporary Speechmatics JWT from our edge function */
-      const session = await supabase.auth.getSession();
-      const accessToken = session.data.session?.access_token;
-      if (!accessToken) {
-        setError("You must be signed in to use voice input.");
-        return;
-      }
-
-      const tokenRes = await supabase.functions.invoke("speechmatics-token", {
-        method: "POST",
-      });
-
-      if (tokenRes.error) {
-        setError(
-          `Failed to get speech token: ${tokenRes.error.message || "Unknown error"}`,
-        );
-        return;
-      }
-
-      const { token } = tokenRes.data as { token: string };
-      if (!token) {
-        setError("Failed to get speech token — empty response.");
-        return;
-      }
-
-      /* 2. Open WebSocket to Speechmatics EU region */
-      const ws = new WebSocket(`wss://eu.rt.speechmatics.com/v2?jwt=${token}`);
-      wsRef.current = ws;
-
-      ws.onopen = async () => {
-        /* 3. Send StartRecognition message */
-        const startMsg = {
-          message: "StartRecognition",
-          audio_format: {
-            type: "raw",
-            encoding: "pcm_s16le",
-            sample_rate: 16000,
-            channels: 1,
-          },
-          transcription_config: {
-            language: "en",
-            max_delay: 2,
-            enable_partials: true,
-          },
-        };
-        ws.send(JSON.stringify(startMsg));
-
-        /* 4. Start microphone capture */
-        try {
-          const stream = await navigator.mediaDevices.getUserMedia({
-            audio: {
-              sampleRate: 48000,
-              channelCount: 1,
-              echoCancellation: true,
-              noiseSuppression: true,
-            },
-          });
-          streamRef.current = stream;
-
-          const audioCtx = new AudioContext({ sampleRate: 48000 });
-          audioCtxRef.current = audioCtx;
-
-          const source = audioCtx.createMediaStreamSource(stream);
-          sourceRef.current = source;
-
-          const processor = audioCtx.createScriptProcessor(4096, 1, 1);
-          processorRef.current = processor;
-
-          const targetSampleRate = 16000;
-
-          processor.onaudioprocess = (event) => {
-            const input = event.inputBuffer.getChannelData(0);
-            const inputLen = input.length;
-            const inputRate = audioCtx.sampleRate;
-
-            /* Downsample to 16kHz */
-            const ratio = inputRate / targetSampleRate;
-            const outputLen = Math.floor(inputLen / ratio);
-            const output = new Float32Array(outputLen);
-
-            for (let i = 0; i < outputLen; i++) {
-              const srcIdx = Math.round(i * ratio);
-              output[i] = input[Math.min(srcIdx, inputLen - 1)];
-            }
-
-            /* Convert Float32 [-1..1] to PCM S16LE */
-            const pcm = new Int16Array(outputLen);
-            for (let i = 0; i < outputLen; i++) {
-              const s = Math.max(-1, Math.min(1, output[i]));
-              pcm[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-            }
-
-            /* Send binary audio data if WebSocket is open */
-            if (ws.readyState === WebSocket.OPEN) {
-              ws.send(pcm.buffer);
-            }
-          };
-
-          source.connect(processor);
-          processor.connect(audioCtx.destination);
-
-          setIsListening(true);
-          setError(null);
-        } catch (micErr) {
-          const msg =
-            micErr instanceof Error ? micErr.message : "Microphone access denied";
-          setError(msg);
-          ws.close();
-        }
-      };
-
-      ws.onmessage = (event) => {
-        try {
-          if (typeof event.data !== "string") return;
-
-          const msg: SpeechmaticsMessage = JSON.parse(event.data);
-
-          if (msg.message === "AddPartialTranscript" && msg.results) {
-            /* Build interim text from partial results */
-            const text = msg.results
-              .filter((r) => r.type !== "punctuation")
-              .map((r) => r.alternatives?.[0]?.content || "")
-              .join(" ");
-
-            interimTranscriptRef.current = text;
-            if (text) {
-              setTranscript(
-                finalTranscriptRef.current
-                  ? finalTranscriptRef.current + " " + text
-                  : text,
-              );
-            } else {
-              setTranscript(finalTranscriptRef.current);
-            }
-          } else if (msg.message === "AddTranscript" && msg.results) {
-            /* Append final transcript */
-            const text = msg.results
-              .filter((r) => r.type !== "punctuation")
-              .map((r) => r.alternatives?.[0]?.content || "")
-              .join(" ");
-
-            if (text) {
-              finalTranscriptRef.current +=
-                (finalTranscriptRef.current ? " " : "") + text;
-            }
-            interimTranscriptRef.current = "";
-            setTranscript(finalTranscriptRef.current);
-          } else if (msg.message === "EndOfTranscript") {
-            /* Server confirmed end — no action needed */
-          }
-        } catch { /* ignore parse errors */ }
-      };
-
-      ws.onerror = () => {
-        setError("Speech recognition connection failed.");
-        setIsListening(false);
-        stopAudioCapture();
-      };
-
-      ws.onclose = () => {
-        setIsListening(false);
-        stopAudioCapture();
-      };
-
-      setTranscript("");
-      setError(null);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Failed to start speech recognition";
-      setError(msg);
-      setIsListening(false);
-    }
-  }, [supported, reset, stopAudioCapture]);
-
-  useEffect(() => {
-    return () => {
-      closeWs();
-      stopAudioCapture();
-    };
-  }, [closeWs, stopAudioCapture]);
-
-  return { transcript, isListening, error, supported, start, stop, reset };
-}
-
-/* ── Component ──────────────────────────────────────────── */
+/* ── Main Component ─────────────────────────────────────── */
 
 export default function InterviewSession() {
   const { id } = useParams<{ id: string }>();
@@ -384,73 +69,273 @@ export default function InterviewSession() {
   const navigate = useNavigate();
   const plan = location.state?.plan as InterviewPlanData | undefined;
 
+  /* ── Core state ── */
+  const [phase, setPhase] = useState<Phase>("idle");
+  const [conversation, setConversation] = useState<ChatMessage[]>([]);
+  const [lastReply, setLastReply] = useState<InterviewReply | null>(null);
+  const [liveCaption, setLiveCaption] = useState("");
+  const [errorBanner, setErrorBanner] = useState<string | null>(null);
+  const [textMode, setTextMode] = useState(false);
+  const [typedDraft, setTypedDraft] = useState("");
+  const [confirmEnd, setConfirmEnd] = useState(false);
+  const [duration, setDuration] = useState(0);
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+
+  const historyRef = useRef<ChatMessage[]>([]);
+  const busyRef = useRef(false);
+  const abortedRef = useRef(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
   const {
-    transcript,
-    isListening,
-    error: speechError,
     supported: speechSupported,
-    start: startListening,
-    stop: stopListening,
-    reset: resetSpeech,
-  } = useSpeechRecognition();
+    error: speechError,
+    isListening,
+    speechActive,
+    liveCaption: hookCaption,
+    startSession,
+    endSession,
+    startCapture,
+    pauseCapture,
+    clearError,
+  } = useSpeechRecognition({
+    onTurnComplete: handleTurnComplete,
+  });
 
-  /* Flatten questions */
-  const questions = plan ? flattenQuestions(plan) : [];
-  const totalQuestions = questions.length;
-
-  const [currentIndex, setCurrentIndex] = useState(0);
-  const [responses, setResponses] = useState<Record<number, string>>({});
-
-  const currentQuestion = questions[currentIndex] ?? null;
-
-  /* Update the response for current question when speech transcript changes */
+  /* ── Duration timer ── */
   useEffect(() => {
-    if (isListening && transcript) {
-      setResponses((prev) => ({ ...prev, [currentIndex]: transcript }));
+    if (phase === "idle" || phase === "ended") return;
+    startedAtRef.current = startedAtRef.current || Date.now();
+    const t = window.setInterval(() => {
+      if (startedAtRef.current) {
+        setDuration(Math.floor((Date.now() - startedAtRef.current) / 1000));
+      }
+    }, 1000);
+    return () => window.clearInterval(t);
+  }, [phase]);
+
+  const startedAtRef = useRef<number | null>(null);
+
+  /* ── Scroll to latest conversation ── */
+  useEffect(() => {
+    scrollRef.current?.scrollTo({
+      top: scrollRef.current.scrollHeight,
+      behavior: "smooth",
+    });
+  }, [conversation, liveCaption, phase]);
+
+  /* ── Sync hook liveCaption ── */
+  useEffect(() => {
+    if (phase === "listening") setLiveCaption(hookCaption);
+  }, [hookCaption, phase]);
+
+  /* ── Error banner cleanup ── */
+  useEffect(() => {
+    if (speechError) setErrorBanner(speechError);
+  }, [speechError]);
+
+  /* ── Helpers ── */
+
+  const appendMessage = useCallback((msg: ChatMessage) => {
+    historyRef.current = [...historyRef.current, msg];
+    setConversation(historyRef.current);
+  }, []);
+
+  const finishInterview = useCallback(() => {
+    stopSpeaking();
+    abortedRef.current = true;
+    busyRef.current = false;
+    void endSession();
+    setPhase("ended");
+    // Auto-navigate to report after a brief completion moment
+    window.setTimeout(() => {
+      navigate(`/report/${id}`, {
+        state: {
+          plan,
+          conversation: historyRef.current,
+          durationSeconds: duration,
+        },
+        replace: true,
+      });
+    }, 3000);
+  }, [endSession, navigate, plan, id, duration]);
+
+  const startListening = useCallback(() => {
+    if (textMode) {
+      setPhase("awaiting");
+      return;
     }
-  }, [transcript, isListening, currentIndex]);
+    setPhase("listening");
+    clearError();
+    startCapture();
+  }, [textMode, startCapture, clearError]);
 
-  const currentResponse = responses[currentIndex] || "";
+  /* ── Turn callback ── */
 
-  const handleTextChange = (value: string) => {
-    setResponses((prev) => ({ ...prev, [currentIndex]: value }));
-  };
+  function handleTurnComplete(text: string, hadSpeech: boolean) {
+    if (busyRef.current) return;
+    const content =
+      hadSpeech && text.trim() ? text.trim() : "[NO_SPEECH_DETECTED]";
+    appendMessage({ role: "user", content });
+    void runInterviewerTurn();
+  }
 
-  const handleNext = () => {
-    if (currentIndex < totalQuestions - 1) {
-      if (isListening) stopListening();
-      resetSpeech();
-      setCurrentIndex((i) => i + 1);
-    }
-  };
+  /* ── Run an interviewer turn (called after a candidate utterance) ── */
 
-  const handlePrevious = () => {
-    if (currentIndex > 0) {
-      if (isListening) stopListening();
-      resetSpeech();
-      setCurrentIndex((i) => i - 1);
-    }
-  };
+  const runInterviewerTurn = useCallback(async () => {
+    if (busyRef.current || abortedRef.current) return;
+    busyRef.current = true;
+    setPhase("thinking");
 
-  const toggleListening = () => {
-    if (isListening) {
-      stopListening();
-    } else {
-      resetSpeech();
+    try {
+      const reply = await fetchInterviewReply(plan!, historyRef.current);
+      if (abortedRef.current) return;
+
+      appendMessage({ role: "assistant", content: reply.message });
+      setLastReply(reply);
+
+      if (reply.done) {
+        setPhase("speaking");
+        if (ttsSupported()) await speak(reply.message);
+        finishInterview();
+        return;
+      }
+
+      setPhase("speaking");
+      if (ttsSupported()) await speak(reply.message);
+
+      if (abortedRef.current) return;
       startListening();
+    } catch (err) {
+      if (abortedRef.current) return;
+      const msg =
+        err instanceof Error
+          ? err.message
+          : "Something went wrong. Please try again.";
+      setErrorBanner(msg);
+      // Allow the candidate to try again
+      setPhase("awaiting");
+    } finally {
+      busyRef.current = false;
     }
-  };
+  }, [plan, appendMessage, finishInterview, startListening]);
 
-  /* ── Empty state ── */
+  /* ── Begin the interview (after user clicks "Begin") ── */
+
+  const begin = useCallback(async () => {
+    if (!plan) return;
+    abortedRef.current = false;
+    startedAtRef.current = Date.now();
+    setConfirmEnd(false);
+    setDuration(0);
+    setPhase("connecting");
+
+    try {
+      if (!textMode && speechSupported) {
+        const ok = await startSession();
+        if (!ok) {
+          setTextMode(true);
+        }
+      }
+      if (abortedRef.current) return;
+
+      busyRef.current = true;
+      const reply = await fetchInterviewReply(plan, []);
+      if (abortedRef.current) return;
+
+      appendMessage({ role: "assistant", content: reply.message });
+      setLastReply(reply);
+
+      if (reply.done) {
+        setPhase("speaking");
+        if (ttsSupported()) await speak(reply.message);
+        finishInterview();
+        return;
+      }
+
+      setPhase("speaking");
+      if (ttsSupported()) await speak(reply.message);
+
+      if (abortedRef.current) return;
+      startListening();
+    } catch (err) {
+      if (abortedRef.current) return;
+      const msg =
+        err instanceof Error
+          ? err.message
+          : "Failed to start the interview. Please try again.";
+      setErrorBanner(msg);
+      setPhase("awaiting");
+    } finally {
+      busyRef.current = false;
+    }
+  }, [
+    plan,
+    textMode,
+    speechSupported,
+    startSession,
+    appendMessage,
+    finishInterview,
+    startListening,
+  ]);
+
+  /* ── Manual end ── */
+
+  const handleEnd = useCallback(() => {
+    if (!confirmEnd) {
+      setConfirmEnd(true);
+      return;
+    }
+    abortedRef.current = true;
+    stopSpeaking();
+    void endSession();
+    setPhase("ended");
+    window.setTimeout(() => {
+      navigate(`/report/${id}`, {
+        state: {
+          plan,
+          conversation: historyRef.current,
+          durationSeconds: duration,
+        },
+        replace: true,
+      });
+    }, 3000);
+  }, [confirmEnd, endSession, navigate, plan, id, duration]);
+
+  /* ── Text mode send ── */
+
+  const sendTyped = useCallback(() => {
+    const text = typedDraft.trim();
+    if (!text || busyRef.current) return;
+    if (phase !== "awaiting") return;
+    setTypedDraft("");
+    appendMessage({ role: "user", content: text });
+    void runInterviewerTurn();
+  }, [typedDraft, phase, appendMessage, runInterviewerTurn]);
+
+  /* ── Cleanup ── */
+
+  useEffect(() => {
+    return () => {
+      abortedRef.current = true;
+      stopSpeaking();
+      void endSession();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /* ════════════════════════════════════════════════════════
+     RENDER
+     ════════════════════════════════════════════════════════ */
+
   if (!plan) {
     return (
-      <div className="max-w-2xl mx-auto pt-12">
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-background to-muted p-4">
         <EmptyState
-          title="No interview session data"
-          description="Generate and review an interview plan first, then start your session from there."
+          title="No interview data"
+          description="Go to setup to prepare your interview plan first."
           action={
             <Button asChild>
-              <Link to="/setup">Go to Setup</Link>
+              <a href="/setup">Go to Setup</a>
             </Button>
           }
         />
@@ -458,297 +343,375 @@ export default function InterviewSession() {
     );
   }
 
-  /* ── Finished state ── */
-  if (currentIndex >= totalQuestions && totalQuestions > 0) {
+  /* ── Idle overlay (start screen) ── */
+  if (phase === "idle") {
     return (
-      <div className="max-w-2xl mx-auto space-y-6 text-center pt-12">
-        <div className="flex justify-center">
-          <div className="flex items-center justify-center w-16 h-16 rounded-full bg-emerald-100">
-            <CheckCircle2 className="h-8 w-8 text-emerald-600" />
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-background to-muted p-4">
+        <div className="max-w-md w-full space-y-8 text-center">
+          <div className="space-y-4">
+            <div className="flex justify-center">
+              <div className="flex items-center justify-center w-20 h-20 rounded-full bg-primary/10">
+                <MessageSquareText className="h-10 w-10 text-primary" />
+              </div>
+            </div>
+            <h1 className="text-2xl font-bold tracking-tight font-heading">
+              Alex — AI Interviewer
+            </h1>
+            <p className="text-sm text-muted-foreground">
+              Simulating a real interview for{" "}
+              <span className="font-medium text-foreground">
+                {plan.target_role || "your target role"}
+              </span>
+            </p>
           </div>
-        </div>
-        <h2 className="text-2xl font-bold tracking-tight">
-          Interview Complete!
-        </h2>
-        <p className="text-muted-foreground max-w-md mx-auto">
-          You answered all {totalQuestions} questions. Your responses have been
-          saved for this session. View the report to see your feedback.
-        </p>
-        <div className="flex items-center justify-center gap-3 pt-4">
-          <Button variant="outline" onClick={() => navigate("/dashboard")}>
-            Go to Dashboard
-          </Button>
-          <Button asChild>
-            <Link to={`/report/${id}`}>View Report</Link>
-          </Button>
+
+          <div className="space-y-3 text-left text-sm text-muted-foreground bg-background rounded-xl border p-5">
+            <div className="flex items-start gap-3">
+              <Mic className="h-4 w-4 text-primary mt-0.5 shrink-0" />
+              <span>
+                You'll need a microphone for this session. Your speech is
+                transcribed in real time.
+              </span>
+            </div>
+            <div className="flex items-start gap-3">
+              <Sparkles className="h-4 w-4 text-primary mt-0.5 shrink-0" />
+              <span>
+                The interviewer adapts to your answers — just speak naturally.
+              </span>
+            </div>
+            <div className="flex items-start gap-3">
+              <CheckCircle2 className="h-4 w-4 text-primary mt-0.5 shrink-0" />
+              <span>
+                Once you finish, you'll get a detailed feedback report.
+              </span>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <Button
+              size="lg"
+              onClick={begin}
+              className="gap-2 w-full"
+            >
+              <Mic className="h-4 w-4" />
+              Begin Interview
+            </Button>
+            <button
+              type="button"
+              onClick={() => {
+                setTextMode((t) => !t);
+              }}
+              className="block mx-auto text-xs text-muted-foreground underline hover:text-foreground transition-colors cursor-pointer"
+            >
+              {textMode
+                ? "🎤 Use microphone instead"
+                : "⌨️ Prefer to type your answers?"}
+            </button>
+          </div>
         </div>
       </div>
     );
   }
 
-  /* ── Main session UI ── */
-
-  const progressPct =
-    totalQuestions > 0 ? ((currentIndex + 1) / totalQuestions) * 100 : 0;
-
-  const currentCategory = currentQuestion?.category || "technical";
-  const categoryColor =
-    categoryIndicatorColors[currentCategory] || "bg-primary";
-
-  return (
-    <div className="max-w-3xl mx-auto space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() => navigate(-1)}
-            className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            Back
-          </button>
-          <div className="h-4 w-px bg-border" />
-          <div>
-            <h1 className="text-lg font-bold tracking-tight leading-tight">
-              Interview Session
-            </h1>
-            {plan.target_role && (
-              <p className="text-xs text-muted-foreground">
-                {plan.target_role}
-              </p>
-            )}
+  /* ── Ended state ── */
+  if (phase === "ended") {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-background to-muted p-4">
+        <div className="max-w-sm w-full text-center space-y-6">
+          <div className="flex justify-center">
+            <div className="flex items-center justify-center w-20 h-20 rounded-full bg-emerald-100">
+              <CheckCircle2 className="h-10 w-10 text-emerald-600" />
+            </div>
+          </div>
+          <h2 className="text-2xl font-bold tracking-tight font-heading">
+            Interview Complete
+          </h2>
+          <p className="text-sm text-muted-foreground">
+            Preparing your feedback report…
+          </p>
+          <Loader2 className="h-5 w-5 mx-auto text-primary animate-spin" />
+          <div className="flex gap-3 justify-center pt-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => navigate("/dashboard")}
+            >
+              Back to Dashboard
+            </Button>
           </div>
         </div>
-        <Button
-          variant="destructive"
-          size="sm"
-          className="gap-2"
-          onClick={() => navigate("/dashboard")}
+      </div>
+    );
+  }
+
+  /* ── Phase labels ── */
+  const phaseLabel = {
+    connecting: ["Connecting to your interviewer…", false],
+    speaking: ["Interviewer is speaking…", true],
+    listening: [
+      speechActive ? "You're speaking…" : "Listening…",
+      speechActive,
+    ],
+    awaiting: ["Your turn — type your answer", false],
+    thinking: ["Thinking…", false],
+    concluding: ["Wrapping up…", false],
+    ended: ["Interview complete", false],
+  } as const;
+
+  const [statusText, statusActive] = phaseLabel[phase] ?? [
+    "",
+    false,
+  ];
+
+  /* ── Main session view ── */
+  return (
+    <div className="min-h-screen flex flex-col bg-gradient-to-b from-background via-muted/30 to-muted/50">
+      {/* Top bar */}
+      <header className="sticky top-0 z-30 bg-background/80 backdrop-blur-sm border-b">
+        <div className="max-w-4xl mx-auto flex items-center justify-between px-4 h-14">
+          <div className="flex items-center gap-3">
+            {confirmEnd ? (
+              <div className="flex items-center gap-2 text-sm">
+                <span className="text-muted-foreground">End interview?</span>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={handleEnd}
+                  className="h-7 text-xs"
+                >
+                  Yes, end
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setConfirmEnd(false)}
+                  className="h-7 text-xs"
+                >
+                  Keep going
+                </Button>
+              </div>
+            ) : (
+              <button
+                onClick={() => setConfirmEnd(true)}
+                className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+                aria-label="Exit interview"
+              >
+                <ArrowLeft className="h-4 w-4" />
+                <span className="hidden sm:inline">Exit</span>
+              </button>
+            )}
+          </div>
+
+          <div className="flex items-center gap-3 text-sm">
+            <span className="font-medium text-foreground hidden sm:inline">
+              Alex
+            </span>
+            <span className="text-muted-foreground text-xs hidden sm:inline">
+              {plan.target_role || "Interviewer"}
+            </span>
+            <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2.5 py-1 text-xs tabular-nums font-medium text-muted-foreground">
+              {formatDuration(duration)}
+            </span>
+          </div>
+
+          {!confirmEnd && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleEnd}
+              className="gap-1.5 text-muted-foreground hover:text-destructive"
+              aria-label="End interview"
+            >
+              <PhoneOff className="h-4 w-4" />
+              <span className="hidden sm:inline">End</span>
+            </Button>
+          )}
+        </div>
+      </header>
+
+      {/* Status pill */}
+      <div className="flex justify-center pt-3">
+        <div
+          className={`inline-flex items-center gap-2 rounded-full px-3.5 py-1.5 text-xs font-medium transition-all duration-200 ${
+            phase === "listening" && speechActive
+              ? "bg-emerald-100 text-emerald-700"
+              : phase === "speaking"
+                ? "bg-primary/10 text-primary"
+                : "bg-muted text-muted-foreground"
+          }`}
+          aria-live="polite"
         >
-          <Square className="h-3.5 w-3.5 fill-current" />
-          End Session
-        </Button>
-      </div>
-
-      {/* Progress bar */}
-      <div className="space-y-1.5">
-        <div className="flex items-center justify-between text-xs text-muted-foreground">
-          <span>
-            Question {currentIndex + 1} of {totalQuestions}
-          </span>
-          <span className="font-medium">{Math.round(progressPct)}%</span>
-        </div>
-        <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
-          <div
-            className="h-full rounded-full bg-primary transition-all duration-500 ease-out"
-            style={{ width: `${progressPct}%` }}
-          />
+          {(phase === "speaking" || phase === "thinking") && (
+            <SpeakingBars
+              active={phase === "speaking"}
+            />
+          )}
+          {phase === "listening" && speechActive && (
+            <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+          )}
+          {statusText}
         </div>
       </div>
 
-      {/* Current Question */}
-      {currentQuestion && (
-        <>
-          {/* Question card */}
-          <Card className="border-primary/20">
-            <CardContent className="p-6 space-y-4">
-              {/* Category + Difficulty badges */}
-              <div className="flex items-center gap-2 flex-wrap">
-                <span
-                  className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                    difficultyColors[currentQuestion.difficulty] ||
-                    "bg-gray-100 text-gray-700 border-gray-200"
+      {/* Conversation area */}
+      <div className="flex-1 flex flex-col px-4 py-4 max-w-2xl mx-auto w-full">
+        <div
+          ref={scrollRef}
+          className="flex-1 overflow-y-auto space-y-4 scroll-smooth"
+          role="log"
+          aria-live="polite"
+          aria-label="Interview transcript"
+        >
+          {/* Previous exchanges */}
+          {conversation.map((msg, i) => {
+            const isAi = msg.role === "assistant";
+            return (
+              <div
+                key={i}
+                className={`flex gap-3 ${isAi ? "" : "flex-row-reverse"}`}
+              >
+                <div
+                  className={`max-w-[80%] rounded-2xl px-4 py-3 ${
+                    isAi
+                      ? "bg-background border border-border rounded-bl-md"
+                      : "bg-primary text-primary-foreground rounded-br-md"
                   }`}
                 >
-                  <span
-                    className={`w-1.5 h-1.5 rounded-full ${categoryColor}`}
-                  />
-                  {categoryLabels[currentQuestion.category] ||
-                    currentQuestion.category}
-                </span>
-                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border bg-muted text-muted-foreground border-border capitalize">
-                  {currentQuestion.difficulty}
-                </span>
-              </div>
-
-              {/* Question text */}
-              <div>
-                <p className="text-lg font-semibold leading-relaxed">
-                  {currentQuestion.question}
-                </p>
-                {currentQuestion.focus_area && (
-                  <p className="text-sm text-muted-foreground mt-2 flex items-center gap-1.5">
-                    <Timer className="h-3.5 w-3.5" />
-                    Focus: {currentQuestion.focus_area}
+                  <p className="text-xs font-medium opacity-60 mb-1">
+                    {isAi ? "Interviewer" : "You"}
                   </p>
-                )}
+                  <p className="text-sm leading-relaxed whitespace-pre-wrap">
+                    {msg.content}
+                  </p>
+                </div>
               </div>
+            );
+          })}
 
-              {/* Answer tips (collapsed) */}
-              {currentQuestion.expected_answer_points.length > 0 && (
-                <details className="group">
-                  <summary className="text-xs font-medium text-muted-foreground cursor-pointer hover:text-foreground transition-colors list-none flex items-center gap-1.5">
-                    <ChevronRight className="h-3.5 w-3.5 transition-transform group-open:rotate-90" />
-                    {currentQuestion.expected_answer_points.length} key points
-                    to cover
-                  </summary>
-                  <ul className="mt-2 space-y-1">
-                    {currentQuestion.expected_answer_points.map((point, i) => (
-                      <li
-                        key={i}
-                        className="flex items-start gap-2 text-xs text-muted-foreground"
-                      >
-                        <span className="inline-block w-1.5 h-1.5 rounded-full bg-primary/50 mt-1.5 shrink-0" />
-                        {point}
-                      </li>
-                    ))}
-                  </ul>
-                </details>
-              )}
-            </CardContent>
-          </Card>
-
-          {/* Voice controls */}
-          <div className="flex items-center justify-center gap-4">
-            <Button
-              variant={isListening ? "default" : "outline"}
-              size="lg"
-              className={`rounded-full h-14 w-14 transition-all duration-200 ${
-                isListening
-                  ? "bg-destructive hover:bg-destructive/90 scale-110 shadow-lg shadow-destructive/25"
-                  : ""
-              }`}
-              onClick={toggleListening}
-              aria-label={
-                isListening ? "Stop recording" : "Start voice response"
-              }
-            >
-              {isListening ? (
-                <Square className="h-5 w-5 fill-current" />
-              ) : (
-                <Mic className="h-5 w-5" />
-              )}
-            </Button>
-            {isListening && (
-              <span className="flex items-center gap-2 text-sm text-muted-foreground animate-pulse">
-                <span className="inline-block w-2 h-2 rounded-full bg-destructive" />
-                Listening...
-              </span>
-            )}
-            {!speechSupported && (
-              <p className="text-xs text-muted-foreground">
-                Voice input not available in this browser. Type your response
-                below.
-              </p>
-            )}
-          </div>
-
-          {/* Speech error */}
-          {speechError && (
-            <div className="flex items-center justify-center gap-2 text-xs text-destructive">
-              <span>{speechError}</span>
-              <button
-                onClick={() => resetSpeech()}
-                className="underline hover:text-foreground"
-              >
-                Dismiss
-              </button>
-            </div>
-          )}
-
-          {/* Transcript / Answer area */}
-          <Card>
-            <CardContent className="p-4 space-y-3">
-              <div className="flex items-center justify-between">
-                <label
-                  htmlFor="response-textarea"
-                  className="text-sm font-medium"
-                >
-                  Your Response
-                  {currentResponse && (
-                    <span className="ml-2 text-xs text-muted-foreground font-normal">
-                      ({currentResponse.split(" ").filter(Boolean).length}{" "}
-                      words)
-                    </span>
-                  )}
-                </label>
-                {isListening && (
-                  <span className="flex items-center gap-1.5 text-xs text-emerald-600 font-medium">
-                    <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                    Transcribing speech...
+          {/* Current interviewer message (while speaking) */}
+          {(phase === "speaking" || phase === "thinking") && lastReply && (
+            <div className="flex gap-3">
+              <div className="max-w-[80%] rounded-2xl px-4 py-3 bg-background border border-primary/20 rounded-bl-md">
+                <p className="text-xs font-medium text-primary mb-1">
+                  Interviewer
+                </p>
+                <p className="text-sm leading-relaxed whitespace-pre-wrap">
+                  {lastReply.message}
+                </p>
+                {phase === "thinking" && (
+                  <span className="inline-block ml-1 animate-pulse">
+                    <span className="inline-block w-1.5 h-4 bg-primary/40 rounded-full align-middle" />
                   </span>
                 )}
               </div>
-              <textarea
-                id="response-textarea"
-                value={currentResponse}
-                onChange={(e) => handleTextChange(e.target.value)}
-                placeholder={
-                  isListening
-                    ? "Speak now — your words will appear here..."
-                    : "Type your answer here, or use the mic button above to speak..."
-                }
-                className="w-full min-h-[120px] rounded-lg border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-y"
-              />
-            </CardContent>
-          </Card>
+            </div>
+          )}
 
-          {/* Navigation */}
-          <div className="flex items-center justify-between gap-3">
-            <Button
-              variant="outline"
-              onClick={handlePrevious}
-              disabled={currentIndex === 0}
-              className="gap-1.5"
+          {/* Live caption (candidate speaking) */}
+          {phase === "listening" && liveCaption && (
+            <div className="flex gap-3 flex-row-reverse">
+              <div className="max-w-[80%] rounded-2xl px-4 py-3 bg-primary text-primary-foreground rounded-br-md">
+                <p className="text-xs font-medium opacity-60 mb-1">You</p>
+                <p className="text-sm leading-relaxed whitespace-pre-wrap">
+                  {liveCaption}
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Bottom area — controls + error */}
+      <div className="px-4 pb-6 max-w-2xl mx-auto w-full space-y-3">
+        {/* Error banner */}
+        {errorBanner && (
+          <div className="flex items-center justify-between gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-2.5 text-sm text-destructive">
+            <span className="text-xs">{errorBanner}</span>
+            <button
+              onClick={() => {
+                setErrorBanner(null);
+                clearError();
+              }}
+              className="text-xs underline hover:text-foreground shrink-0 cursor-pointer"
             >
-              <ChevronLeft className="h-4 w-4" />
-              Previous
-            </Button>
+              Dismiss
+            </button>
+          </div>
+        )}
 
+        {/* Voice / Text controls */}
+        {phase === "listening" && (
+          <div className="flex items-center justify-center gap-3">
+            <button
+              onClick={() => {
+                pauseCapture();
+                setPhase("awaiting");
+              }}
+              className="flex items-center justify-center w-14 h-14 rounded-full bg-destructive text-destructive-foreground hover:bg-destructive/90 transition-all active:scale-95 shadow-lg"
+              aria-label="Stop recording"
+            >
+              <MicOff className="h-5 w-5" />
+            </button>
             <span className="text-xs text-muted-foreground">
-              {currentIndex + 1} / {totalQuestions}
+              Click to pause
             </span>
+          </div>
+        )}
 
-            {currentIndex < totalQuestions - 1 ? (
-              <Button onClick={handleNext} className="gap-1.5">
-                Next
-                <ChevronRight className="h-4 w-4" />
-              </Button>
+        {phase === "awaiting" && (
+          <div className="space-y-3">
+            {textMode ? (
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={typedDraft}
+                  onChange={(e) => setTypedDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      sendTyped();
+                    }
+                  }}
+                  placeholder="Type your answer…"
+                  className="flex-1 rounded-lg border border-input bg-background px-4 py-2.5 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  autoFocus
+                  aria-label="Type your answer"
+                />
+                <Button
+                  onClick={sendTyped}
+                  disabled={!typedDraft.trim() || busyRef.current}
+                  size="icon"
+                  className="shrink-0"
+                  aria-label="Send answer"
+                >
+                  <Send className="h-4 w-4" />
+                </Button>
+              </div>
             ) : (
-              <Button
-                onClick={() => setCurrentIndex(totalQuestions)}
-                className="gap-1.5"
-              >
-                <CheckCircle2 className="h-4 w-4" />
-                Finish Session
-              </Button>
+              <div className="flex flex-col items-center gap-3">
+                <button
+                  onClick={() => startListening()}
+                  className="flex items-center justify-center w-14 h-14 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 transition-all active:scale-95 shadow-lg"
+                  aria-label="Start speaking"
+                >
+                  <Mic className="h-5 w-5" />
+                </button>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-muted-foreground">
+                    Tap to speak
+                  </span>
+                  <button
+                    onClick={() => setTextMode(true)}
+                    className="text-xs text-muted-foreground underline hover:text-foreground cursor-pointer"
+                  >
+                    or type
+                  </button>
+                </div>
+              </div>
             )}
           </div>
-
-          {/* Answer progress dots */}
-          <details className="text-center">
-            <summary className="text-xs text-muted-foreground cursor-pointer hover:text-foreground transition-colors">
-              Response progress —{" "}
-              {Object.keys(responses).length} of {totalQuestions} answered
-            </summary>
-            <div className="flex justify-center gap-1 pt-2">
-              {questions.map((_, i) => (
-                <span
-                  key={i}
-                  className={`inline-block w-2.5 h-2.5 rounded-full transition-colors ${
-                    responses[i]
-                      ? "bg-primary"
-                      : i === currentIndex
-                        ? "bg-primary/40 ring-2 ring-primary/30"
-                        : "bg-muted-foreground/20"
-                  }`}
-                  title={`Question ${i + 1}${responses[i] ? " ✓ answered" : ""}`}
-                />
-              ))}
-            </div>
-          </details>
-        </>
-      )}
+        )}
+      </div>
     </div>
   );
 }
