@@ -12,6 +12,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { EmptyState } from "@/components/common/EmptyState";
+import { supabase } from "@/lib/supabase";
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -81,118 +82,296 @@ function flattenQuestions(plan: InterviewPlanData): InterviewQuestion[] {
   return all;
 }
 
-/* ── Speech recognition types (browser API) ────────────── */
+/* ── Speech recognition types (Speechmatics WebSocket) ── */
 
-interface SpeechRecognitionEventLike {
-  resultIndex: number;
-  results: SpeechRecognitionResult[];
+interface SpeechmaticsAlternative {
+  content: string;
+  confidence?: number;
 }
 
-interface SpeechRecognitionResult {
-  isFinal: boolean;
-  [index: number]: { transcript: string };
+interface SpeechmaticsResult {
+  alternatives: SpeechmaticsAlternative[];
+  start_time: number;
+  end_time: number;
+  type: "word" | "punctuation";
 }
 
-/* ── Custom hook: Speech Recognition ───────────────────── */
+interface SpeechmaticsMessage {
+  message: string;
+  results?: SpeechmaticsResult[];
+  channel?: string;
+}
+
+/* ── Custom hook: Speechmatics-powered recognition ────── */
 
 function useSpeechRecognition() {
   const [transcript, setTranscript] = useState("");
   const [isListening, setIsListening] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const recognitionRef = useRef<ReturnType<typeof createRecognition> | null>(null);
 
+  const wsRef = useRef<WebSocket | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const processorRef = useRef<ScriptProcessorNode | null>(null);
+  const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const finalTranscriptRef = useRef("");
+  const interimTranscriptRef = useRef("");
+
+  /* Speechmatics works in any modern browser with mic + WebSocket support */
   const supported =
     typeof window !== "undefined" &&
-    ("SpeechRecognition" in window || "webkitSpeechRecognition" in window);
+    typeof navigator !== "undefined" &&
+    !!navigator.mediaDevices?.getUserMedia;
 
-  const createRecognition = () => {
-    const SpeechRecognitionAPI =
-      (window as unknown as Record<string, new () => unknown>).SpeechRecognition ||
-      (window as unknown as Record<string, new () => unknown>).webkitSpeechRecognition;
-    return new (SpeechRecognitionAPI as new () => {
-      continuous: boolean;
-      interimResults: boolean;
-      lang: string;
-      onresult: ((event: SpeechRecognitionEventLike) => void) | null;
-      onerror: ((event: { error: string }) => void) | null;
-      onend: (() => void) | null;
-      start: () => void;
-      stop: () => void;
-    })();
-  };
-
-  const start = useCallback(() => {
-    if (!supported) {
-      setError("Speech recognition is not supported in this browser.");
-      return;
+  const stopAudioCapture = useCallback(() => {
+    /* Disconnect & close audio graph */
+    if (processorRef.current && sourceRef.current) {
+      try {
+        processorRef.current.disconnect();
+        sourceRef.current.disconnect();
+      } catch { /* already disconnected */ }
     }
-
-    if (recognitionRef.current) {
-      recognitionRef.current.stop();
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
     }
+    if (audioCtxRef.current) {
+      audioCtxRef.current.close().catch(() => {});
+      audioCtxRef.current = null;
+    }
+    processorRef.current = null;
+    sourceRef.current = null;
+  }, []);
 
-    const recognition = createRecognition();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = "en-US";
-
-    recognition.onresult = (event: SpeechRecognitionEventLike) => {
-      let finalText = "";
-      let interimText = "";
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const result = event.results[i];
-        if (result.isFinal) {
-          finalText += result[0].transcript;
-        } else {
-          interimText += result[0].transcript;
+  const closeWs = useCallback(() => {
+    if (wsRef.current) {
+      try {
+        /* Signal end-of-stream before closing */
+        if (wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(
+            JSON.stringify({ message: "EndOfStream", last_seq_no: null }),
+          );
         }
-      }
-      setTranscript((prev) => {
-        const base = finalText
-          ? prev + (prev && !prev.endsWith(" ") ? " " : "") + finalText
-          : prev;
-        return interimText ? base + (base ? " " : "") + interimText : base;
-      });
-    };
-
-    recognition.onerror = (event: { error: string }) => {
-      if (event.error === "no-speech") return;
-      setError(`Recognition error: ${event.error}`);
-      setIsListening(false);
-    };
-
-    recognition.onend = () => {
-      setIsListening(false);
-    };
-
-    recognitionRef.current = recognition;
-    setTranscript("");
-    setError(null);
-    setIsListening(true);
-    recognition.start();
-  }, [supported]);
+      } catch { /* ignore */ }
+      try {
+        wsRef.current.close();
+      } catch { /* ignore */ }
+      wsRef.current = null;
+    }
+  }, []);
 
   const stop = useCallback(() => {
-    if (recognitionRef.current) {
-      recognitionRef.current.stop();
-      recognitionRef.current = null;
-    }
+    closeWs();
+    stopAudioCapture();
     setIsListening(false);
-  }, []);
+    /* Merge any remaining interim into final */
+    if (interimTranscriptRef.current) {
+      finalTranscriptRef.current +=
+        (finalTranscriptRef.current ? " " : "") + interimTranscriptRef.current;
+      setTranscript(finalTranscriptRef.current);
+      interimTranscriptRef.current = "";
+    }
+  }, [closeWs, stopAudioCapture]);
 
   const reset = useCallback(() => {
     stop();
+    finalTranscriptRef.current = "";
+    interimTranscriptRef.current = "";
     setTranscript("");
     setError(null);
   }, [stop]);
 
+  const start = useCallback(async () => {
+    if (!supported) {
+      setError("Voice input is not available in this browser.");
+      return;
+    }
+
+    /* Clean up any previous session */
+    reset();
+    finalTranscriptRef.current = "";
+    interimTranscriptRef.current = "";
+
+    try {
+      /* 1. Fetch a temporary Speechmatics JWT from our edge function */
+      const session = await supabase.auth.getSession();
+      const accessToken = session.data.session?.access_token;
+      if (!accessToken) {
+        setError("You must be signed in to use voice input.");
+        return;
+      }
+
+      const tokenRes = await supabase.functions.invoke("speechmatics-token", {
+        method: "POST",
+      });
+
+      if (tokenRes.error) {
+        setError(
+          `Failed to get speech token: ${tokenRes.error.message || "Unknown error"}`,
+        );
+        return;
+      }
+
+      const { token } = tokenRes.data as { token: string };
+      if (!token) {
+        setError("Failed to get speech token — empty response.");
+        return;
+      }
+
+      /* 2. Open WebSocket to Speechmatics EU region */
+      const ws = new WebSocket(`wss://eu.rt.speechmatics.com/v2?jwt=${token}`);
+      wsRef.current = ws;
+
+      ws.onopen = async () => {
+        /* 3. Send StartRecognition message */
+        const startMsg = {
+          message: "StartRecognition",
+          audio_format: {
+            type: "raw",
+            encoding: "pcm_s16le",
+            sample_rate: 16000,
+            channels: 1,
+          },
+          transcription_config: {
+            language: "en",
+            max_delay: 2,
+            enable_partials: true,
+          },
+        };
+        ws.send(JSON.stringify(startMsg));
+
+        /* 4. Start microphone capture */
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              sampleRate: 48000,
+              channelCount: 1,
+              echoCancellation: true,
+              noiseSuppression: true,
+            },
+          });
+          streamRef.current = stream;
+
+          const audioCtx = new AudioContext({ sampleRate: 48000 });
+          audioCtxRef.current = audioCtx;
+
+          const source = audioCtx.createMediaStreamSource(stream);
+          sourceRef.current = source;
+
+          const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+          processorRef.current = processor;
+
+          const targetSampleRate = 16000;
+
+          processor.onaudioprocess = (event) => {
+            const input = event.inputBuffer.getChannelData(0);
+            const inputLen = input.length;
+            const inputRate = audioCtx.sampleRate;
+
+            /* Downsample to 16kHz */
+            const ratio = inputRate / targetSampleRate;
+            const outputLen = Math.floor(inputLen / ratio);
+            const output = new Float32Array(outputLen);
+
+            for (let i = 0; i < outputLen; i++) {
+              const srcIdx = Math.round(i * ratio);
+              output[i] = input[Math.min(srcIdx, inputLen - 1)];
+            }
+
+            /* Convert Float32 [-1..1] to PCM S16LE */
+            const pcm = new Int16Array(outputLen);
+            for (let i = 0; i < outputLen; i++) {
+              const s = Math.max(-1, Math.min(1, output[i]));
+              pcm[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+            }
+
+            /* Send binary audio data if WebSocket is open */
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(pcm.buffer);
+            }
+          };
+
+          source.connect(processor);
+          processor.connect(audioCtx.destination);
+
+          setIsListening(true);
+          setError(null);
+        } catch (micErr) {
+          const msg =
+            micErr instanceof Error ? micErr.message : "Microphone access denied";
+          setError(msg);
+          ws.close();
+        }
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          if (typeof event.data !== "string") return;
+
+          const msg: SpeechmaticsMessage = JSON.parse(event.data);
+
+          if (msg.message === "AddPartialTranscript" && msg.results) {
+            /* Build interim text from partial results */
+            const text = msg.results
+              .filter((r) => r.type !== "punctuation")
+              .map((r) => r.alternatives?.[0]?.content || "")
+              .join(" ");
+
+            interimTranscriptRef.current = text;
+            if (text) {
+              setTranscript(
+                finalTranscriptRef.current
+                  ? finalTranscriptRef.current + " " + text
+                  : text,
+              );
+            } else {
+              setTranscript(finalTranscriptRef.current);
+            }
+          } else if (msg.message === "AddTranscript" && msg.results) {
+            /* Append final transcript */
+            const text = msg.results
+              .filter((r) => r.type !== "punctuation")
+              .map((r) => r.alternatives?.[0]?.content || "")
+              .join(" ");
+
+            if (text) {
+              finalTranscriptRef.current +=
+                (finalTranscriptRef.current ? " " : "") + text;
+            }
+            interimTranscriptRef.current = "";
+            setTranscript(finalTranscriptRef.current);
+          } else if (msg.message === "EndOfTranscript") {
+            /* Server confirmed end — no action needed */
+          }
+        } catch { /* ignore parse errors */ }
+      };
+
+      ws.onerror = () => {
+        setError("Speech recognition connection failed.");
+        setIsListening(false);
+        stopAudioCapture();
+      };
+
+      ws.onclose = () => {
+        setIsListening(false);
+        stopAudioCapture();
+      };
+
+      setTranscript("");
+      setError(null);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to start speech recognition";
+      setError(msg);
+      setIsListening(false);
+    }
+  }, [supported, reset, stopAudioCapture]);
+
   useEffect(() => {
     return () => {
-      if (recognitionRef.current) {
-        recognitionRef.current.stop();
-      }
+      closeWs();
+      stopAudioCapture();
     };
-  }, []);
+  }, [closeWs, stopAudioCapture]);
 
   return { transcript, isListening, error, supported, start, stop, reset };
 }
