@@ -231,14 +231,11 @@ export default function InterviewSession() {
     setPhase("connecting");
 
     try {
+      let voiceOk = false;
       if (!textMode && speechSupported) {
-        const ok = await startSession();
-        if (!ok) {
+        voiceOk = await startSession();
+        if (!voiceOk) {
           setTextMode(true);
-          // Don't call startListening here — voice failed, text mode is now
-          // set, let the greeting flow happen before prompting user.
-        } else {
-          // Voice ready — proceed
         }
       }
       if (abortedRef.current) return;
@@ -261,7 +258,7 @@ export default function InterviewSession() {
       if (ttsSupported()) await speak(reply.message);
 
       if (abortedRef.current) return;
-      startListening();
+      startListening(voiceOk ? undefined : { forceText: true });
     } catch (err) {
       if (abortedRef.current) return;
       const msg =

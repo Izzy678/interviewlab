@@ -130,33 +130,17 @@ export default function InterviewSetup() {
       // Call the Edge Function to parse
       setUploadStatus("parsing");
 
-      const { data: sessionData } = await supabase.auth.getSession();
-      const token = sessionData?.session?.access_token;
+      const { data, error } = await supabase.functions.invoke("parse-resume", {
+        body: { filePath, fileName: file.name },
+      });
 
-      if (!token) throw new Error("No auth session found.");
-
-      const response = await fetch(
-        "https://edbytsuykbezfvniwdyd.supabase.co/functions/v1/parse-resume",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({
-            filePath,
-            fileName: file.name,
-          }),
-        }
-      );
-
-      const result = await response.json();
-
-      if (!response.ok) {
-        throw new Error(result.details || result.error || "Failed to parse resume");
+      if (error) {
+        throw new Error(
+          data?.details || data?.error || error.message || "Failed to parse resume",
+        );
       }
 
-      setParsedResume(result.resume);
+      setParsedResume(data.resume);
       setUploadStatus("success");
     } catch (err) {
       const message =
@@ -204,29 +188,21 @@ export default function InterviewSetup() {
     try {
       if (!user) throw new Error("You must be signed in to analyze a job description.");
 
-      const { data: sessionData } = await supabase.auth.getSession();
-      const token = sessionData?.session?.access_token;
-      if (!token) throw new Error("No auth session found.");
-
-      const response = await fetch(
-        "https://edbytsuykbezfvniwdyd.supabase.co/functions/v1/parse-job-description",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({ rawText: text }),
-        }
+      const { data, error } = await supabase.functions.invoke(
+        "parse-job-description",
+        { body: { rawText: text } },
       );
 
-      const result = await response.json();
-
-      if (!response.ok) {
-        throw new Error(result.details || result.error || "Failed to analyze job description");
+      if (error) {
+        throw new Error(
+          data?.details ||
+            data?.error ||
+            error.message ||
+            "Failed to analyze job description",
+        );
       }
 
-      setParsedJd(result.parsed);
+      setParsedJd(data.parsed);
       setJdStatus("success");
     } catch (err) {
       const message =
@@ -252,26 +228,18 @@ export default function InterviewSetup() {
     try {
       if (!user) throw new Error("You must be signed in to import a job URL.");
 
-      const { data: sessionData } = await supabase.auth.getSession();
-      const token = sessionData?.session?.access_token;
-      if (!token) throw new Error("No auth session found.");
-
-      const response = await fetch(
-        "https://edbytsuykbezfvniwdyd.supabase.co/functions/v1/fetch-job-url",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({ url }),
-        }
+      const { data: result, error } = await supabase.functions.invoke(
+        "fetch-job-url",
+        { body: { url } },
       );
 
-      const result = await response.json();
-
-      if (!response.ok) {
-        throw new Error(result.details || result.error || "Failed to import job URL");
+      if (error) {
+        throw new Error(
+          result?.details ||
+            result?.error ||
+            error.message ||
+            "Failed to import job URL",
+        );
       }
 
       const data = result as JobUrlResult;
@@ -310,10 +278,6 @@ export default function InterviewSetup() {
     try {
       if (!user) throw new Error("You must be signed in to generate an interview plan.");
 
-      const { data: sessionData } = await supabase.auth.getSession();
-      const token = sessionData?.session?.access_token;
-      if (!token) throw new Error("No auth session found.");
-
       const resumeData = parsedResume
         ? {
             parsed_name: parsedResume.parsed_name,
@@ -335,28 +299,21 @@ export default function InterviewSetup() {
           }
         : undefined;
 
-      const response = await fetch(
-        "https://edbytsuykbezfvniwdyd.supabase.co/functions/v1/generate-interview-plan",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({
-            resumeData,
-            jobData,
-          }),
-        }
+      const { data, error } = await supabase.functions.invoke(
+        "generate-interview-plan",
+        { body: { resumeData, jobData } },
       );
 
-      const result = await response.json();
-
-      if (!response.ok) {
-        throw new Error(result.details || result.error || "Failed to generate interview plan");
+      if (error) {
+        throw new Error(
+          data?.details ||
+            data?.error ||
+            error.message ||
+            "Failed to generate interview plan",
+        );
       }
 
-      navigate("/plan", { state: { plan: result, fromSetup: true } });
+      navigate("/plan", { state: { plan: data, fromSetup: true } });
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "Something went wrong.";
