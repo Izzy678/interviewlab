@@ -247,7 +247,7 @@ export default function InterviewPlan() {
         </button>
         {fromSetup && (
           <Button
-            onClick={() => navigate("/session/1")}
+            onClick={() => navigate("/session/1", { state: { plan } })}
             className="gap-2"
           >
             <Send className="h-4 w-4" />
@@ -367,7 +367,7 @@ export default function InterviewPlan() {
         {fromSetup ? (
           <Button
             size="lg"
-            onClick={() => navigate("/session/1")}
+            onClick={() => navigate("/session/1", { state: { plan } })}
             className="gap-2"
           >
             <Send className="h-4 w-4" />
