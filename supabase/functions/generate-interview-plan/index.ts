@@ -123,20 +123,6 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    // Build the prompt for OpenRouter
-    const apiKey = Deno.env.get("OPENROUTER_API_KEY");
-    if (!apiKey) {
-      return jsonResponse(
-        {
-          error: "OpenRouter not configured",
-          details: "OPENROUTER_API_KEY secret is missing.",
-        },
-        503,
-      );
-    }
-
-    const model = Deno.env.get("OPENROUTER_MODEL") || "openrouter/free";
-
     const systemMessage =
       "You are an expert interview coach and technical recruiter. " +
       "You generate detailed, tailored interview plans based on a candidate's resume " +
@@ -218,49 +204,67 @@ Deno.serve(async (req: Request) => {
     ].join("\n");
 
     console.log(
-      "[generate-interview-plan] OpenRouter request",
-      { model, userId: user.id },
+      "[generate-interview-plan] Request",
+      { userId: user.id },
     );
 
-    const response = await fetch(
-      "https://openrouter.ai/api/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-          "HTTP-Referer": "https://interviewlab.app",
-          "X-Title": "InterviewLab",
-        },
-        body: JSON.stringify({
-          model,
-          messages: [
-            { role: "system", content: systemMessage },
-            { role: "user", content: userMessage },
-          ],
-          temperature: 0.2,
-          max_tokens: 4000,
-        }),
-      },
-    );
+    // Try providers: Gemini → OpenRouter
+    const geminiKey = Deno.env.get("GEMINI_API_KEY");
+    const openRouterKey = Deno.env.get("OPENROUTER_API_KEY");
 
-    if (!response.ok) {
-      const errBody = await response.text();
-      console.error(
-        "[generate-interview-plan] OpenRouter error",
-        { status: response.status, body: errBody.slice(0, 1000) },
-      );
-      throw new Error(
-        "OpenRouter API error: " + response.status + " - " +
-          errBody.slice(0, 500),
-      );
+    if (!geminiKey && !openRouterKey) {
+      return jsonResponse({
+        error: "No AI provider configured",
+        details: "Set GEMINI_API_KEY or OPENROUTER_API_KEY secret.",
+      }, 503);
     }
 
-    const data = await response.json();
-    const content = data.choices?.[0]?.message?.content || "{}";
+    const providers: { name: string; call: () => Promise<string> }[] = [];
+
+    if (geminiKey) {
+      providers.push({
+        name: "Gemini",
+        call: () => callGemini(systemMessage, userMessage, geminiKey),
+      });
+    }
+    if (openRouterKey) {
+      providers.push({
+        name: "OpenRouter",
+        call: () =>
+          callOpenRouter(
+            systemMessage,
+            userMessage,
+            openRouterKey,
+            Deno.env.get("OPENROUTER_MODEL") || "openrouter/free",
+          ),
+      });
+    }
+
+    let lastError: Error | null = null;
+    let rawContent = "";
+    let providerUsed = "";
+
+    for (const provider of providers) {
+      try {
+        rawContent = await provider.call();
+        providerUsed = provider.name;
+        console.log("[generate-interview-plan] Used provider", provider.name);
+        break;
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        console.error(
+          `[generate-interview-plan] ${provider.name} failed`,
+          lastError.message,
+        );
+      }
+    }
+
+    if (!rawContent) {
+      throw lastError || new Error("All AI providers failed");
+    }
 
     // Clean markdown code fences from the response
-    const jsonStr = content
+    const jsonStr = rawContent
       .replace(/```json\n?/g, "")
       .replace(/```\n?/g, "")
       .trim();
@@ -276,7 +280,7 @@ Deno.serve(async (req: Request) => {
           jsonStr.slice(0, 300),
         );
         throw new Error(
-          "OpenRouter returned invalid JSON: " + jsonStr.slice(0, 200),
+          providerUsed + " returned invalid JSON: " + jsonStr.slice(0, 200),
         );
       }
       plan = JSON.parse(match[0]);
@@ -339,3 +343,66 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ error: message }, 500);
   }
 });
+
+/* ── AI Provider callers ──────────────────────────────── */
+
+async function callGemini(
+  systemMessage: string,
+  userMessage: string,
+  apiKey: string,
+): Promise<string> {
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        system_instruction: { parts: [{ text: systemMessage }] },
+        contents: [{ parts: [{ text: userMessage }] }],
+        generation_config: { maxOutputTokens: 4000, temperature: 0.2 },
+      }),
+    },
+  );
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Gemini error ${res.status}: ${err.slice(0, 300)}`);
+  }
+
+  const data = await res.json();
+  return data.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
+}
+
+async function callOpenRouter(
+  systemMessage: string,
+  userMessage: string,
+  apiKey: string,
+  model: string,
+): Promise<string> {
+  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+      "HTTP-Referer": "https://interviewlab.app",
+      "X-Title": "InterviewLab",
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: "system", content: systemMessage },
+        { role: "user", content: userMessage },
+      ],
+      temperature: 0.2,
+      max_tokens: 4000,
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`OpenRouter error ${res.status}: ${err.slice(0, 300)}`);
+  }
+
+  const data = await res.json();
+  return data.choices?.[0]?.message?.content || "{}";
+}

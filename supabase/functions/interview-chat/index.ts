@@ -242,7 +242,7 @@ async function callGemini(
   apiKey: string,
 ): Promise<ChatResponse> {
   const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -363,19 +363,13 @@ Deno.serve(async (req: Request) => {
       { userId: user.id, turn: history.length + 1 },
     );
 
-    // Try providers in order: Anthropic → Gemini → OpenRouter
-    const anthropicKey = Deno.env.get("ANTHROPIC_API_KEY");
+    // Try providers in order: Gemini → OpenRouter → Anthropic
     const geminiKey = Deno.env.get("GEMINI_API_KEY");
     const openRouterKey = Deno.env.get("OPENROUTER_API_KEY");
+    const anthropicKey = Deno.env.get("ANTHROPIC_API_KEY");
 
     const providers: { name: string; call: () => Promise<ChatResponse> }[] = [];
 
-    if (anthropicKey) {
-      providers.push({
-        name: "Anthropic",
-        call: () => callAnthropic(systemMessage, userMessage, anthropicKey),
-      });
-    }
     if (geminiKey) {
       providers.push({
         name: "Gemini",
@@ -388,12 +382,18 @@ Deno.serve(async (req: Request) => {
         call: () => callOpenRouter(systemMessage, userMessage, openRouterKey),
       });
     }
+    if (anthropicKey) {
+      providers.push({
+        name: "Anthropic",
+        call: () => callAnthropic(systemMessage, userMessage, anthropicKey),
+      });
+    }
 
     if (providers.length === 0) {
       return jsonResponse({
         error: "No LLM configured",
         details:
-          "Set ANTHROPIC_API_KEY, GEMINI_API_KEY, or OPENROUTER_API_KEY secret.",
+          "Set GEMINI_API_KEY, OPENROUTER_API_KEY, or ANTHROPIC_API_KEY secret.",
       }, 503);
     }
 

@@ -16,10 +16,6 @@ interface ScrapeResult {
   parsed: ParsedJobDescription;
 }
 
-interface OpenRouterResponse {
-  choices: { message: { content: string } }[];
-}
-
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -65,7 +61,6 @@ async function fetchViaBrightData(targetUrl: string): Promise<string> {
   if (!apiKey) throw new Error("BRIGHTDATA_API_KEY is not configured");
 
   const zone = Deno.env.get("BRIGHTDATA_ZONE") || "web_unlocker1";
-  // Job boards (Indeed, LinkedIn, etc.) render content via JS — enable browser rendering by default.
   const render = (Deno.env.get("BRIGHTDATA_RENDER") || "true").toLowerCase() === "true";
 
   const payload: Record<string, string> = {
@@ -105,7 +100,6 @@ async function fetchViaBrightData(targetUrl: string): Promise<string> {
   if (contentType.includes("application/json")) {
     try {
       const parsed = JSON.parse(raw);
-      // Surface API-level errors returned inside a 200 JSON payload.
       if (parsed && typeof parsed === "object" && parsed.error) {
         throw new Error(
           `Bright Data Web Unlocker API error: ${parsed.error}${parsed.message ? " - " + parsed.message : ""}`,
@@ -122,125 +116,6 @@ async function fetchViaBrightData(targetUrl: string): Promise<string> {
   }
 
   return raw;
-}
-
-async function extractWithOpenRouter(text: string): Promise<ScrapeResult> {
-  const apiKey = Deno.env.get("OPENROUTER_API_KEY");
-  if (!apiKey) throw new Error("OPENROUTER_API_KEY is not configured");
-
-  const model = Deno.env.get("OPENROUTER_MODEL") || "openrouter/free";
-
-  const systemMessage =
-    "You are a job page extraction assistant. Extract structured data from job posting HTML converted to text. Always respond with valid JSON only, no markdown formatting.";
-
-  const userMessage = [
-    "Extract structured information from the following job posting text.",
-    "",
-    "Return ONLY valid JSON with these exact fields:",
-    "{",
-    '  "companyName": "Company name (the hiring company)",',
-    '  "companyOverview": "Brief 2-3 sentence description of what the company does (from the page)",',
-    '  "techStack": ["List of programming languages, frameworks, tools, and technologies mentioned"],',
-    '  "jobDescription": "Full cleaned-up job description text, preserving all details about the role, requirements, benefits, etc.",',
-    '  "role": "Job title / role name",',
-    '  "seniority": "Seniority level (e.g. Entry Level, Mid Level, Senior, Staff, Principal, Lead, Manager, Intern)",',
-    '  "required_skills": ["List of required / must-have skills, technologies, and qualifications"],',
-    '  "nice_to_have_skills": ["List of nice-to-have / preferred skills and qualifications"],',
-    '  "responsibilities": ["List of key job responsibilities and day-to-day tasks"]',
-    "}",
-    "",
-    "Rules:",
-    "- companyName: Extract the name of the company hiring. If not found, use an empty string.",
-    "- companyOverview: Extract from 'About us' sections, company descriptions on the page. If not found, use an empty string.",
-    "- techStack: List every technology, framework, language, or tool explicitly mentioned. If none, use an empty array.",
-    "- jobDescription: The FULL job description text, cleaned up. Include responsibilities, requirements, benefits, about the company section, etc.",
-    "- For role, seniority, required_skills, nice_to_have_skills, responsibilities: extract from the job description parts.",
-    "",
-    "Do not invent data. Use empty string or empty array for missing fields.",
-    "",
-    "JOB POSTING TEXT:",
-    text,
-  ].join("\n");
-
-  console.log("[fetch-job-url] OpenRouter request", {
-    model,
-    textLength: text.length,
-    textPreview: text.slice(0, 200),
-  });
-
-  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-      "HTTP-Referer": "https://interviewlab.app",
-      "X-Title": "InterviewLab",
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: "system", content: systemMessage },
-        { role: "user", content: userMessage },
-      ],
-      temperature: 0.1,
-      max_tokens: 3000,
-    }),
-  });
-
-  if (!response.ok) {
-    const errBody = await response.text();
-    console.error("[fetch-job-url] OpenRouter error", {
-      status: response.status,
-      body: errBody.slice(0, 1000),
-    });
-    throw new Error(
-      "OpenRouter API error: " + response.status + " - " + errBody.slice(0, 500),
-    );
-  }
-
-  const data: OpenRouterResponse = await response.json();
-  const content = data.choices?.[0]?.message?.content || "{}";
-
-  const jsonStr = content
-    .replace(/```json\n?/g, "")
-    .replace(/```\n?/g, "")
-    .trim();
-
-  let parsed: Record<string, unknown>;
-  try {
-    parsed = JSON.parse(jsonStr);
-  } catch {
-    const match = jsonStr.match(/\{[\s\S]*\}/);
-    if (!match) {
-      console.error("[fetch-job-url] could not parse JSON", jsonStr.slice(0, 300));
-      throw new Error("OpenRouter returned invalid JSON: " + jsonStr.slice(0, 200));
-    }
-    parsed = JSON.parse(match[0]);
-  }
-
-  const asString = (v: unknown) =>
-    v == null ? "" : Array.isArray(v) ? v.map(String).join(", ") : String(v);
-  const asArray = (v: unknown): string[] => {
-    if (Array.isArray(v)) return v.map((x) => String(x));
-    if (typeof v === "string" && v.trim()) {
-      return v.split(/[,;|]/).map((s) => s.trim()).filter(Boolean);
-    }
-    return [];
-  };
-
-  return {
-    jobDescription: sanitizeText(asString(parsed.jobDescription || "")),
-    companyName: sanitizeText(asString(parsed.companyName || "")),
-    companyOverview: sanitizeText(asString(parsed.companyOverview || "")),
-    techStack: asArray(parsed.techStack || []),
-    parsed: {
-      role: sanitizeText(asString(parsed.role || parsed.title || parsed.job_title || "")),
-      seniority: sanitizeText(asString(parsed.seniority || parsed.level || parsed.seniority_level || "")),
-      required_skills: asArray(parsed.required_skills || parsed.requirements || parsed.must_have || []),
-      nice_to_have_skills: asArray(parsed.nice_to_have_skills || parsed.preferred_skills || []),
-      responsibilities: asArray(parsed.responsibilities || parsed.duties || []),
-    },
-  };
 }
 
 Deno.serve(async (req: Request) => {
@@ -326,13 +201,34 @@ Deno.serve(async (req: Request) => {
 
     console.log("[fetch-job-url] extracted text length", text.length);
 
+    // Try Gemini first, fall back to OpenRouter
+    const geminiKey = Deno.env.get("GEMINI_API_KEY");
+    const openRouterKey = Deno.env.get("OPENROUTER_API_KEY");
+
     let extracted: ScrapeResult;
-    try {
-      extracted = await extractWithOpenRouter(text.slice(0, 8000));
-    } catch (aiErr) {
-      const msg = aiErr instanceof Error ? aiErr.message : "Unknown AI error";
-      console.error("[fetch-job-url] OpenRouter extraction failed", msg);
-      return jsonResponse({ error: "Failed to extract job details", details: msg }, 502);
+
+    if (geminiKey) {
+      try {
+        extracted = await extractWithGemini(text.slice(0, 8000), geminiKey);
+        console.log("[fetch-job-url] Used Gemini");
+      } catch (aiErr) {
+        const msg = aiErr instanceof Error ? aiErr.message : "Unknown AI error";
+        console.error("[fetch-job-url] Gemini failed", msg);
+        if (openRouterKey) {
+          extracted = await extractWithOpenRouter(text.slice(0, 8000), openRouterKey);
+          console.log("[fetch-job-url] Used OpenRouter (Gemini fallback)");
+        } else {
+          return jsonResponse({ error: "Failed to extract job details", details: msg }, 502);
+        }
+      }
+    } else if (openRouterKey) {
+      extracted = await extractWithOpenRouter(text.slice(0, 8000), openRouterKey);
+      console.log("[fetch-job-url] Used OpenRouter");
+    } else {
+      return jsonResponse(
+        { error: "No AI provider configured", details: "Set GEMINI_API_KEY or OPENROUTER_API_KEY secret." },
+        503,
+      );
     }
 
     const hasContent =
@@ -355,3 +251,182 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ error: message }, 500);
   }
 });
+
+/* ── AI Provider callers ──────────────────────────────── */
+
+async function extractWithGemini(text: string, apiKey: string): Promise<ScrapeResult> {
+  const systemMessage =
+    "You are a job page extraction assistant. Extract structured data from job posting HTML converted to text. Always respond with valid JSON only, no markdown formatting.";
+
+  const userMessage = [
+    "Extract structured information from the following job posting text.",
+    "",
+    "Return ONLY valid JSON with these exact fields:",
+    "{",
+    '  "companyName": "Company name (the hiring company)",',
+    '  "companyOverview": "Brief 2-3 sentence description of what the company does (from the page)",',
+    '  "techStack": ["List of programming languages, frameworks, tools, and technologies mentioned"],',
+    '  "jobDescription": "Full cleaned-up job description text, preserving all details about the role, requirements, benefits, etc.",',
+    '  "role": "Job title / role name",',
+    '  "seniority": "Seniority level (e.g. Entry Level, Mid Level, Senior, Staff, Principal, Lead, Manager, Intern)",',
+    '  "required_skills": ["List of required / must-have skills, technologies, and qualifications"],',
+    '  "nice_to_have_skills": ["List of nice-to-have / preferred skills and qualifications"],',
+    '  "responsibilities": ["List of key job responsibilities and day-to-day tasks"]',
+    "}",
+    "",
+    "Rules:",
+    "- companyName: Extract the name of the company hiring. If not found, use an empty string.",
+    "- companyOverview: Extract from 'About us' sections, company descriptions on the page. If not found, use an empty string.",
+    "- techStack: List every technology, framework, language, or tool explicitly mentioned. If none, use an empty array.",
+    "- jobDescription: The FULL job description text, cleaned up. Include responsibilities, requirements, benefits, about the company section, etc.",
+    "- For role, seniority, required_skills, nice_to_have_skills, responsibilities: extract from the job description parts.",
+    "",
+    "Do not invent data. Use empty string or empty array for missing fields.",
+    "",
+    "JOB POSTING TEXT:",
+    text,
+  ].join("\n");
+
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        system_instruction: { parts: [{ text: systemMessage }] },
+        contents: [{ parts: [{ text: userMessage }] }],
+        generation_config: { maxOutputTokens: 3000, temperature: 0.1 },
+      }),
+    },
+  );
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error("Gemini API error: " + res.status + " - " + err);
+  }
+
+  const data = await res.json();
+  const content = data.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
+
+  return parseScrapeResult(content);
+}
+
+async function extractWithOpenRouter(text: string, apiKey: string): Promise<ScrapeResult> {
+  const model = Deno.env.get("OPENROUTER_MODEL") || "openrouter/free";
+
+  const systemMessage =
+    "You are a job page extraction assistant. Extract structured data from job posting HTML converted to text. Always respond with valid JSON only, no markdown formatting.";
+
+  const userMessage = [
+    "Extract structured information from the following job posting text.",
+    "",
+    "Return ONLY valid JSON with these exact fields:",
+    "{",
+    '  "companyName": "Company name (the hiring company)",',
+    '  "companyOverview": "Brief 2-3 sentence description of what the company does (from the page)",',
+    '  "techStack": ["List of programming languages, frameworks, tools, and technologies mentioned"],',
+    '  "jobDescription": "Full cleaned-up job description text, preserving all details about the role, requirements, benefits, etc.",',
+    '  "role": "Job title / role name",',
+    '  "seniority": "Seniority level (e.g. Entry Level, Mid Level, Senior, Staff, Principal, Lead, Manager, Intern)",',
+    '  "required_skills": ["List of required / must-have skills, technologies, and qualifications"],',
+    '  "nice_to_have_skills": ["List of nice-to-have / preferred skills and qualifications"],',
+    '  "responsibilities": ["List of key job responsibilities and day-to-day tasks"]',
+    "}",
+    "",
+    "Rules:",
+    "- companyName: Extract the name of the company hiring. If not found, use an empty string.",
+    "- companyOverview: Extract from 'About us' sections, company descriptions on the page. If not found, use an empty string.",
+    "- techStack: List every technology, framework, language, or tool explicitly mentioned. If none, use an empty array.",
+    "- jobDescription: The FULL job description text, cleaned up. Include responsibilities, requirements, benefits, about the company section, etc.",
+    "- For role, seniority, required_skills, nice_to_have_skills, responsibilities: extract from the job description parts.",
+    "",
+    "Do not invent data. Use empty string or empty array for missing fields.",
+    "",
+    "JOB POSTING TEXT:",
+    text,
+  ].join("\n");
+
+  console.log("[fetch-job-url] OpenRouter request", {
+    model,
+    textLength: text.length,
+    textPreview: text.slice(0, 200),
+  });
+
+  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+      "HTTP-Referer": "https://interviewlab.app",
+      "X-Title": "InterviewLab",
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: "system", content: systemMessage },
+        { role: "user", content: userMessage },
+      ],
+      temperature: 0.1,
+      max_tokens: 3000,
+    }),
+  });
+
+  if (!response.ok) {
+    const errBody = await response.text();
+    console.error("[fetch-job-url] OpenRouter error", {
+      status: response.status,
+      body: errBody.slice(0, 1000),
+    });
+    throw new Error(
+      "OpenRouter API error: " + response.status + " - " + errBody.slice(0, 500),
+    );
+  }
+
+  const data: { choices: { message: { content: string } }[] } = await response.json();
+  const content = data.choices?.[0]?.message?.content || "{}";
+
+  return parseScrapeResult(content);
+}
+
+function parseScrapeResult(rawContent: string): ScrapeResult {
+  const jsonStr = rawContent
+    .replace(/```json\n?/g, "")
+    .replace(/```\n?/g, "")
+    .trim();
+
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(jsonStr);
+  } catch {
+    const match = jsonStr.match(/\{[\s\S]*\}/);
+    if (!match) {
+      console.error("[fetch-job-url] could not parse JSON", jsonStr.slice(0, 300));
+      throw new Error("AI returned invalid JSON: " + jsonStr.slice(0, 200));
+    }
+    parsed = JSON.parse(match[0]);
+  }
+
+  const asString = (v: unknown) =>
+    v == null ? "" : Array.isArray(v) ? v.map(String).join(", ") : String(v);
+  const asArray = (v: unknown): string[] => {
+    if (Array.isArray(v)) return v.map((x) => String(x));
+    if (typeof v === "string" && v.trim()) {
+      return v.split(/[,;|]/).map((s) => s.trim()).filter(Boolean);
+    }
+    return [];
+  };
+
+  return {
+    jobDescription: sanitizeText(asString(parsed.jobDescription || "")),
+    companyName: sanitizeText(asString(parsed.companyName || "")),
+    companyOverview: sanitizeText(asString(parsed.companyOverview || "")),
+    techStack: asArray(parsed.techStack || []),
+    parsed: {
+      role: sanitizeText(asString(parsed.role || parsed.title || parsed.job_title || "")),
+      seniority: sanitizeText(asString(parsed.seniority || parsed.level || parsed.seniority_level || "")),
+      required_skills: asArray(parsed.required_skills || parsed.requirements || parsed.must_have || []),
+      nice_to_have_skills: asArray(parsed.nice_to_have_skills || parsed.preferred_skills || []),
+      responsibilities: asArray(parsed.responsibilities || parsed.duties || []),
+    },
+  };
+}

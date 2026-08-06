@@ -9,14 +9,6 @@ interface ParsedResume {
   education: string[];
 }
 
-interface OpenRouterResponse {
-  choices: {
-    message: {
-      content: string;
-    };
-  }[];
-}
-
 // PostgreSQL rejects lone Unicode surrogates (e.g. \uD800) in JSON — replace them
 // with the U+FFFD replacement character so inserts never fail with
 // "unsupported Unicode escape sequence".
@@ -94,7 +86,35 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    const parsed = await extractWithOpenRouter(rawText);
+    // Try Gemini first, fall back to OpenRouter
+    const geminiKey = Deno.env.get("GEMINI_API_KEY");
+    const openRouterKey = Deno.env.get("OPENROUTER_API_KEY");
+
+    let parsed: ParsedResume;
+    let providerUsed = "";
+
+    if (geminiKey) {
+      try {
+        parsed = await extractWithGemini(rawText, geminiKey);
+        providerUsed = "Gemini";
+        console.log("[parse-resume] Used Gemini");
+      } catch (err) {
+        console.error("[parse-resume] Gemini failed", err instanceof Error ? err.message : String(err));
+        if (openRouterKey) {
+          parsed = await extractWithOpenRouter(rawText, openRouterKey);
+          providerUsed = "OpenRouter";
+          console.log("[parse-resume] Used OpenRouter (Gemini fallback)");
+        } else {
+          throw err; // No fallback available
+        }
+      }
+    } else if (openRouterKey) {
+      parsed = await extractWithOpenRouter(rawText, openRouterKey);
+      providerUsed = "OpenRouter";
+      console.log("[parse-resume] Used OpenRouter");
+    } else {
+      throw new Error("No AI provider configured. Set GEMINI_API_KEY or OPENROUTER_API_KEY.");
+    }
 
     const { data: resumeRecord, error: insertError } = await supabase
       .from("resumes")
@@ -135,6 +155,8 @@ Deno.serve(async (req: Request) => {
   }
 });
 
+/* ── PDF text extraction ──────────────────────────────── */
+
 function extractPdfText(buffer: ArrayBuffer): string {
   const decoder = new TextDecoder("utf-8", { fatal: false });
   const raw = decoder.decode(buffer);
@@ -163,12 +185,56 @@ function extractPdfText(buffer: ArrayBuffer): string {
   return textChunks.join(" ");
 }
 
-async function extractWithOpenRouter(text: string): Promise<ParsedResume> {
-  const apiKey = Deno.env.get("OPENROUTER_API_KEY");
-  if (!apiKey) {
-    throw new Error("OPENROUTER_API_KEY is not configured");
+/* ── AI Provider callers ──────────────────────────────── */
+
+async function extractWithGemini(text: string, apiKey: string): Promise<ParsedResume> {
+  const systemMessage =
+    "You are a resume parsing assistant. Extract structured data from resumes. Always respond with valid JSON only, no markdown formatting.";
+
+  const userMessage = [
+    "Extract structured information from the following resume text.",
+    "",
+    "Return ONLY valid JSON with these exact fields:",
+    "{",
+    '  "name": "Full name of the candidate",',
+    '  "years_experience": "Total years of professional experience (e.g. 5 years or 3-5 years or Entry level if not clear)",',
+    '  "skills": ["List of technical and professional skills"],',
+    '  "companies": ["Previous companies worked at"],',
+    '  "projects": ["Notable projects mentioned"],',
+    '  "education": ["Educational qualifications"]',
+    "}",
+    "",
+    "If a field cannot be determined, use an empty string or empty array as appropriate.",
+    "",
+    "RESUME TEXT:",
+    text,
+  ].join("\n");
+
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        system_instruction: { parts: [{ text: systemMessage }] },
+        contents: [{ parts: [{ text: userMessage }] }],
+        generation_config: { maxOutputTokens: 1000, temperature: 0.1 },
+      }),
+    },
+  );
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error("Gemini API error: " + res.status + " - " + err);
   }
 
+  const data = await res.json();
+  const content = data.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
+
+  return parseResumeJson(content);
+}
+
+async function extractWithOpenRouter(text: string, apiKey: string): Promise<ParsedResume> {
   const model = Deno.env.get("OPENROUTER_MODEL") || "openrouter/free";
 
   const systemMessage =
@@ -218,32 +284,35 @@ async function extractWithOpenRouter(text: string): Promise<ParsedResume> {
     throw new Error("OpenRouter API error: " + response.status + " - " + errBody);
   }
 
-  const data: OpenRouterResponse = await response.json();
+  const data: { choices: { message: { content: string } }[] } = await response.json();
   const content = data.choices?.[0]?.message?.content || "{}";
 
-  const jsonStr = content
+  return parseResumeJson(content);
+}
+
+function parseResumeJson(rawContent: string): ParsedResume {
+  const jsonStr = rawContent
     .replace(/```json\n?/g, "")
     .replace(/```\n?/g, "")
     .trim();
 
-  let parsed: ParsedResume;
+  let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(jsonStr);
   } catch {
-    // Model sometimes wraps the JSON in prose — fall back to the first {...} block
     const match = jsonStr.match(/\{[\s\S]*\}/);
     if (!match) {
-      throw new Error("OpenRouter returned invalid JSON: " + jsonStr.slice(0, 200));
+      throw new Error("AI returned invalid JSON: " + jsonStr.slice(0, 200));
     }
     parsed = JSON.parse(match[0]);
   }
 
   return {
-    name: parsed.name || "",
-    years_experience: parsed.years_experience || "",
-    skills: Array.isArray(parsed.skills) ? parsed.skills : [],
-    companies: Array.isArray(parsed.companies) ? parsed.companies : [],
-    projects: Array.isArray(parsed.projects) ? parsed.projects : [],
-    education: Array.isArray(parsed.education) ? parsed.education : [],
+    name: String(parsed.name || ""),
+    years_experience: String(parsed.years_experience || ""),
+    skills: Array.isArray(parsed.skills) ? parsed.skills.map(String) : [],
+    companies: Array.isArray(parsed.companies) ? parsed.companies.map(String) : [],
+    projects: Array.isArray(parsed.projects) ? parsed.projects.map(String) : [],
+    education: Array.isArray(parsed.education) ? parsed.education.map(String) : [],
   };
 }
