@@ -33,8 +33,6 @@ import {
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/contexts/AuthContext";
 
-const jobLevels = ["Entry Level", "Mid Level", "Senior", "Staff", "Principal"];
-
 interface ParsedResume {
   id: string;
   parsed_name: string;
@@ -70,7 +68,6 @@ export default function InterviewSetup() {
   const { user } = useAuth();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const [selectedLevel, setSelectedLevel] = useState("Mid Level");
   const [jobUrl, setJobUrl] = useState("");
   const [jobDescription, setJobDescription] = useState("");
 
@@ -349,7 +346,6 @@ export default function InterviewSetup() {
           body: JSON.stringify({
             resumeData,
             jobData,
-            targetLevel: selectedLevel,
           }),
         }
       );
@@ -828,33 +824,6 @@ export default function InterviewSetup() {
               </div>
             </div>
           )}
-        </CardContent>
-      </Card>
-
-      {/* Job Level */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Target Level</CardTitle>
-          <CardDescription>
-            Select the seniority level you're interviewing for.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="flex flex-wrap gap-2">
-            {jobLevels.map((level) => (
-              <button
-                key={level}
-                onClick={() => setSelectedLevel(level)}
-                className={`px-4 py-2 rounded-full text-sm font-medium border transition-colors ${
-                  selectedLevel === level
-                    ? "bg-primary text-primary-foreground border-primary"
-                    : "bg-background text-muted-foreground border-border hover:border-primary/50"
-                }`}
-              >
-                {level}
-              </button>
-            ))}
-          </div>
         </CardContent>
       </Card>
 
