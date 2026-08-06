@@ -74,6 +74,8 @@ export async function callGeminiText(options: {
   thinkingBudget?: number;
   /** When true, ask Gemini to emit application/json. */
   jsonMode?: boolean;
+  /** Extra attempts on rate-limit / transient failures. */
+  retries?: number;
 }): Promise<string> {
   const apiKey = options.apiKey || requireGeminiKey();
   const model = geminiModel();
@@ -81,6 +83,7 @@ export async function callGeminiText(options: {
   const temperature = options.temperature ?? 0.2;
   // Default: disable thinking so output tokens aren't eaten on 2.5 models.
   const thinkingBudget = options.thinkingBudget ?? 0;
+  const retries = options.retries ?? 2;
 
   const generationConfig: Record<string, unknown> = {
     maxOutputTokens,
@@ -92,36 +95,65 @@ export async function callGeminiText(options: {
     generationConfig.responseMimeType = "application/json";
   }
 
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        system_instruction: { parts: [{ text: options.system }] },
-        contents: [{ role: "user", parts: [{ text: options.user }] }],
-        generationConfig,
-      }),
-    },
-  );
+  let lastError: Error | null = null;
 
-  const rawBody = await res.text();
-  if (!res.ok) {
-    throw new Error(
-      `Gemini API error: ${res.status} - ${rawBody.slice(0, 400)}`,
-    );
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            system_instruction: { parts: [{ text: options.system }] },
+            contents: [{ role: "user", parts: [{ text: options.user }] }],
+            generationConfig,
+          }),
+        },
+      );
+
+      const rawBody = await res.text();
+      if (!res.ok) {
+        const isRateLimited =
+          res.status === 429 ||
+          /rate.?limit|quota|resource.?exhausted/i.test(rawBody);
+        const err = new Error(
+          isRateLimited
+            ? `Gemini rate limit hit (${res.status}). Wait a few seconds and retry.`
+            : `Gemini API error: ${res.status} - ${rawBody.slice(0, 400)}`,
+        );
+        (err as Error & { retryable?: boolean }).retryable = isRateLimited ||
+          res.status >= 500;
+        throw err;
+      }
+
+      let data: unknown;
+      try {
+        data = JSON.parse(rawBody);
+      } catch {
+        throw new Error(
+          `Gemini returned non-JSON body: ${rawBody.slice(0, 200)}`,
+        );
+      }
+
+      return extractGeminiText(data);
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      const retryable =
+        (lastError as Error & { retryable?: boolean }).retryable === true ||
+        /rate limit|429|503|500|timeout|fetch failed/i.test(lastError.message);
+
+      if (!retryable || attempt === retries) break;
+
+      const delayMs = 1200 * (attempt + 1);
+      console.warn(
+        `[gemini] attempt ${attempt + 1} failed (${lastError.message.slice(0, 120)}), retrying in ${delayMs}ms`,
+      );
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
   }
 
-  let data: unknown;
-  try {
-    data = JSON.parse(rawBody);
-  } catch {
-    throw new Error(
-      `Gemini returned non-JSON body: ${rawBody.slice(0, 200)}`,
-    );
-  }
-
-  return extractGeminiText(data);
+  throw lastError || new Error("Gemini request failed");
 }
 
 /** Strip markdown fences and extract the first JSON object. */
