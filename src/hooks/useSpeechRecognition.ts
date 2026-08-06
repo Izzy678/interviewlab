@@ -19,6 +19,7 @@ interface SpeechmaticsMessage {
   message: string;
   results?: SpeechmaticsResult[];
   channel?: string;
+  reason?: string;
 }
 
 /* ── Hook options ───────────────────────────────────────── */
@@ -36,25 +37,15 @@ interface UseSpeechRecognitionOptions {
 
 /* ── Hook ───────────────────────────────────────────────── */
 
-/**
- * Real-time speech recognition via Speechmatics.
- *
- * The WebSocket + mic session is opened once (`startSession`) and stays open
- * for the whole interview. Audio is only fed to Speechmatics while
- * `startCapture` is active, which lets the AI interviewer speak without being
- * transcribed. Turn-taking is handled with silence detection: when no new
- * words arrive for `endOfSpeechMs`, the accumulated transcript is handed to
- * `onTurnComplete`.
- */
 export function useSpeechRecognition({
   onTurnComplete,
   endOfSpeechMs = 2000,
   noSpeechMs = 15000,
   maxTurnMs = 60000,
 }: UseSpeechRecognitionOptions) {
-  const [isListening, setIsListening] = useState(false); // capture active
-  const [speechActive, setSpeechActive] = useState(false); // words detected
-  const [liveCaption, setLiveCaption] = useState(""); // current turn text
+  const [isListening, setIsListening] = useState(false);
+  const [speechActive, setSpeechActive] = useState(false);
+  const [liveCaption, setLiveCaption] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -62,8 +53,10 @@ export function useSpeechRecognition({
   const audioCtxRef = useRef<AudioContext | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const muteGainRef = useRef<GainNode | null>(null);
 
   const captureActiveRef = useRef(false);
+  const recognitionReadyRef = useRef(false);
   const finalRef = useRef("");
   const interimRef = useRef("");
   const lastSpeechAtRef = useRef(0);
@@ -97,22 +90,26 @@ export function useSpeechRecognition({
       const sinceSpeech = now - lastSpeechAtRef.current;
       const sinceStart = now - turnStartedAtRef.current;
 
+      /* Combine finals + latest interim for the full turn text */
+      const combined = [finalRef.current.trim(), interimRef.current.trim()]
+        .filter(Boolean)
+        .join(" ");
+
       if (sinceSpeech >= endOfSpeechMs) {
-        const final = finalRef.current.trim();
-        if (final) {
-          completeTurn(final, true);
+        if (combined) {
+          completeTurn(combined, true);
         } else if (sinceStart >= noSpeechMs) {
           completeTurn("", false);
         }
-      } else if (sinceStart >= maxTurnMs && finalRef.current.trim()) {
-        completeTurn(finalRef.current.trim(), true);
+      } else if (sinceStart >= maxTurnMs && combined) {
+        completeTurn(combined, true);
       }
     }, 500);
 
     return () => window.clearInterval(watchdog);
   }, [endOfSpeechMs, noSpeechMs, maxTurnMs, completeTurn]);
 
-  /** Open the WebSocket + mic pipeline. Call once per session (after a user gesture). */
+  /** Open the WebSocket + mic pipeline. Call once after a user gesture. */
   const startSession = useCallback(async (): Promise<boolean> => {
     if (!supported) {
       setError("Voice input is not available in this browser.");
@@ -142,8 +139,17 @@ export function useSpeechRecognition({
       const { token } = tokenRes.data as { token: string };
       const ws = new WebSocket(`wss://eu.rt.speechmatics.com/v2?jwt=${token}`);
       wsRef.current = ws;
+      recognitionReadyRef.current = false;
 
       return await new Promise<boolean>((resolve) => {
+        const timeout = window.setTimeout(() => {
+          if (!recognitionReadyRef.current) {
+            setError("Speech recognition timed out. Try again.");
+            try { ws.close(); } catch { /* noop */ }
+            resolve(false);
+          }
+        }, 10000);
+
         ws.onopen = async () => {
           try {
             ws.send(
@@ -153,7 +159,6 @@ export function useSpeechRecognition({
                   type: "raw",
                   encoding: "pcm_s16le",
                   sample_rate: 16000,
-                  channels: 1,
                 },
                 transcription_config: {
                   language: "en",
@@ -165,15 +170,15 @@ export function useSpeechRecognition({
 
             const stream = await navigator.mediaDevices.getUserMedia({
               audio: {
-                sampleRate: 48000,
                 channelCount: 1,
                 echoCancellation: true,
-                noiseSuppression: true,
+                noiseSuppression: false,
+                autoGainControl: true,
               },
             });
             streamRef.current = stream;
 
-            const audioCtx = new AudioContext({ sampleRate: 48000 });
+            const audioCtx = new AudioContext();
             audioCtxRef.current = audioCtx;
             if (audioCtx.state === "suspended") {
               await audioCtx.resume().catch(() => {});
@@ -181,6 +186,11 @@ export function useSpeechRecognition({
 
             const source = audioCtx.createMediaStreamSource(stream);
             sourceRef.current = source;
+
+            /* Muted gain node — don't feed mic back to speakers */
+            const muteGain = audioCtx.createGain();
+            muteGain.gain.value = 0;
+            muteGainRef.current = muteGain;
 
             const processor = audioCtx.createScriptProcessor(4096, 1, 1);
             processorRef.current = processor;
@@ -212,19 +222,19 @@ export function useSpeechRecognition({
             };
 
             source.connect(processor);
-            processor.connect(audioCtx.destination);
+            processor.connect(muteGain);
+            muteGain.connect(audioCtx.destination);
 
             setError(null);
-            resolve(true);
+            /* Don't resolve yet — wait for RecognitionStarted below */
           } catch (micErr) {
+            clearTimeout(timeout);
             const msg =
               micErr instanceof Error
                 ? micErr.message
                 : "Microphone access denied.";
             setError(msg);
-            try {
-              ws.close();
-            } catch { /* noop */ }
+            try { ws.close(); } catch { /* noop */ }
             resolve(false);
           }
         };
@@ -233,6 +243,27 @@ export function useSpeechRecognition({
           try {
             if (typeof event.data !== "string") return;
             const msg: SpeechmaticsMessage = JSON.parse(event.data);
+
+            /* Handle RecognitionStarted */
+            if (msg.message === "RecognitionStarted") {
+              clearTimeout(timeout);
+              recognitionReadyRef.current = true;
+              resolve(true);
+              return;
+            }
+
+            /* Handle errors / warnings from Speechmatics */
+            if (msg.message === "Error" || msg.message === "Warning") {
+              const reason = msg.reason || msg.message;
+              console.warn("[speechmatics]", msg.message, reason);
+              if (msg.message === "Error") {
+                setError(`Speech recognition error: ${reason}`);
+                captureActiveRef.current = false;
+                setIsListening(false);
+              }
+              return;
+            }
+
             if (!captureActiveRef.current) return;
 
             if (msg.message === "AddPartialTranscript" && msg.results) {
@@ -262,13 +293,16 @@ export function useSpeechRecognition({
                 setSpeechActive(true);
               }
               interimRef.current = "";
+              /* Show finals + latest interim combined in live caption */
               setLiveCaption(finalRef.current);
             }
           } catch { /* ignore malformed frames */ }
         };
 
         ws.onerror = () => {
+          clearTimeout(timeout);
           setError("Speech recognition connection failed.");
+          recognitionReadyRef.current = false;
           captureActiveRef.current = false;
           setIsListening(false);
           setSpeechActive(false);
@@ -276,6 +310,8 @@ export function useSpeechRecognition({
         };
 
         ws.onclose = () => {
+          clearTimeout(timeout);
+          recognitionReadyRef.current = false;
           captureActiveRef.current = false;
           setIsListening(false);
           setSpeechActive(false);
@@ -293,6 +329,7 @@ export function useSpeechRecognition({
   /** Tear down the WebSocket + mic pipeline. */
   const endSession = useCallback(async () => {
     captureActiveRef.current = false;
+    recognitionReadyRef.current = false;
     setIsListening(false);
     setSpeechActive(false);
 
@@ -312,6 +349,7 @@ export function useSpeechRecognition({
       try {
         processorRef.current.disconnect();
         sourceRef.current.disconnect();
+        muteGainRef.current?.disconnect();
       } catch { /* already disconnected */ }
     }
     if (streamRef.current) {
@@ -324,6 +362,7 @@ export function useSpeechRecognition({
     }
     processorRef.current = null;
     sourceRef.current = null;
+    muteGainRef.current = null;
     finalRef.current = "";
     interimRef.current = "";
     setLiveCaption("");
@@ -336,6 +375,10 @@ export function useSpeechRecognition({
 
   /** Begin feeding mic audio + start turn detection. */
   const startCapture = useCallback(() => {
+    if (!recognitionReadyRef.current) {
+      setError("Speech recognition is not ready yet. Try again.");
+      return;
+    }
     if (!wsRef.current || !audioCtxRef.current) return;
     audioCtxRef.current.resume().catch(() => {});
     captureActiveRef.current = true;

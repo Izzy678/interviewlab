@@ -159,7 +159,11 @@ export async function fetchInterviewReply(
   });
 
   if (error) {
-    throw new Error(error.message || "Failed to reach the interviewer.");
+    const details = (data as { details?: string })?.details;
+    const errMsg = details
+      ? `${error.message}: ${details}`
+      : error.message || "Failed to reach the interviewer.";
+    throw new Error(errMsg);
   }
   if (!data?.message) {
     throw new Error(

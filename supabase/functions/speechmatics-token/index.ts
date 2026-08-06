@@ -58,7 +58,7 @@ Deno.serve(async (req: Request) => {
           "Authorization": `Bearer ${apiKey}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ ttl: 120 }),
+        body: JSON.stringify({ ttl: 3600 }),
       },
     );
 

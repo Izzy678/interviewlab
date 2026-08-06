@@ -6,9 +6,7 @@ import {
   CheckCircle2,
   TrendingUp,
   Target,
-  Lightbulb,
   AlertCircle,
-  Clock,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {

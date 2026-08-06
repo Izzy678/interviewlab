@@ -101,7 +101,7 @@ function compactPlan(plan: InterviewPlanData): string {
       compact[label] = section.questions.map((q) => ({
         q: q.question,
         f: q.focus_area,
-        pts: q.expected_answer_points.slice(0, 3),
+        pts: (q.expected_answer_points || []).slice(0, 3),
       }));
     }
   }
@@ -122,7 +122,7 @@ function buildUserMessage(
   const historyText = recentHistory.length === 0
     ? "(No conversation yet — this is the very first turn.)"
     : recentHistory
-      .map((m, i) =>
+      .map((m) =>
         `${m.role === "assistant" ? "Interviewer" : "Candidate"}: ${m.content}`
       )
       .join("\n\n");
@@ -150,6 +150,153 @@ function buildUserMessage(
     `Respond with ONLY valid JSON in this format (no markdown, no code fences):`,
     `{ "message": "your interviewer utterance here", "stage": "greeting|introduction|background|core|follow_up|wrap_up|concluded", "done": false }`,
   ].join("\n");
+}
+
+/* ── LLM callers ────────────────────────────────────────── */
+
+function parseReply(rawContent: string): ChatResponse | null {
+  let jsonStr = rawContent
+    .replace(/```json\n?/g, "")
+    .replace(/```\n?/g, "")
+    .trim();
+
+  const match = jsonStr.match(/\{[\s\S]*\}/);
+  if (match) jsonStr = match[0];
+
+  try {
+    return JSON.parse(jsonStr);
+  } catch {
+    return null;
+  }
+}
+
+function finalizeReply(
+  reply: ChatResponse | null,
+  rawContent: string,
+): ChatResponse {
+  if (reply) {
+    const validStages = [
+      "greeting", "introduction", "background", "core",
+      "follow_up", "wrap_up", "concluded",
+    ];
+    if (!validStages.includes(reply.stage)) reply.stage = "core";
+    reply.message = sanitizeText(reply.message)
+      .replace(/\*{1,2}/g, "")
+      .replace(/\n{2,}/g, "\n")
+      .trim()
+      .slice(0, 1000);
+    if (!reply.message) {
+      reply.message =
+        "Thanks for sharing that. Let me ask you about another aspect of your experience.";
+    }
+    return reply;
+  }
+
+  // Fallback: wrap raw text
+  return {
+    message: sanitizeText(
+      rawContent
+        .replace(/```[\s\S]*?```/g, "")
+        .replace(/\*{1,2}/g, "")
+        .trim()
+        .slice(0, 500),
+    ) || "Let me continue — please tell me more about your experience.",
+    stage: "core" as const,
+    done: false,
+  };
+}
+
+async function callAnthropic(
+  systemMessage: string,
+  userMessage: string,
+  apiKey: string,
+): Promise<ChatResponse> {
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 600,
+      system: systemMessage,
+      messages: [{ role: "user", content: userMessage }],
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Anthropic error ${res.status}: ${err.slice(0, 300)}`);
+  }
+
+  const data = await res.json();
+  const raw = data.content?.[0]?.text || "";
+  return finalizeReply(parseReply(raw), raw);
+}
+
+async function callGemini(
+  systemMessage: string,
+  userMessage: string,
+  apiKey: string,
+): Promise<ChatResponse> {
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        system_instruction: { parts: [{ text: systemMessage }] },
+        contents: [{ parts: [{ text: userMessage }] }],
+        generation_config: { maxOutputTokens: 600, temperature: 0.7 },
+      }),
+    },
+  );
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Gemini error ${res.status}: ${err.slice(0, 300)}`);
+  }
+
+  const data = await res.json();
+  const raw = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+  return finalizeReply(parseReply(raw), raw);
+}
+
+async function callOpenRouter(
+  systemMessage: string,
+  userMessage: string,
+  apiKey: string,
+): Promise<ChatResponse> {
+  const model = Deno.env.get("OPENROUTER_MODEL") || "openrouter/free";
+  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+      "HTTP-Referer": "https://interviewlab.app",
+      "X-Title": "InterviewLab",
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: "system", content: systemMessage },
+        { role: "user", content: userMessage },
+      ],
+      temperature: 0.7,
+      max_tokens: 600,
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`OpenRouter error ${res.status}: ${err.slice(0, 300)}`);
+  }
+
+  const data = await res.json();
+  const raw = data.choices?.[0]?.message?.content || "{}";
+  return finalizeReply(parseReply(raw), raw);
 }
 
 /* ── Main handler ──────────────────────────────────────── */
@@ -202,17 +349,6 @@ Deno.serve(async (req: Request) => {
       }, 400);
     }
 
-    // Build the prompt for OpenRouter
-    const apiKey = Deno.env.get("OPENROUTER_API_KEY");
-    if (!apiKey) {
-      return jsonResponse({
-        error: "OpenRouter not configured",
-        details: "OPENROUTER_API_KEY secret is missing.",
-      }, 503);
-    }
-
-    const model = Deno.env.get("OPENROUTER_MODEL") || "openrouter/free";
-
     const systemMessage =
       "You are a warm, professional AI interviewer for InterviewLab, a realistic mock-interview product. " +
       "You conduct live, conversational voice interviews. You speak like a human interviewer — " +
@@ -223,108 +359,62 @@ Deno.serve(async (req: Request) => {
     const userMessage = buildUserMessage(plan, history);
 
     console.log(
-      "[interview-chat] OpenRouter request",
-      { model, userId: user.id, turn: history.length + 1 },
+      "[interview-chat] Request",
+      { userId: user.id, turn: history.length + 1 },
     );
 
-    const response = await fetch(
-      "https://openrouter.ai/api/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-          "HTTP-Referer": "https://interviewlab.app",
-          "X-Title": "InterviewLab",
-        },
-        body: JSON.stringify({
-          model,
-          messages: [
-            { role: "system", content: systemMessage },
-            { role: "user", content: userMessage },
-          ],
-          temperature: 0.7,
-          max_tokens: 600,
-        }),
-      },
-    );
+    // Try providers in order: Anthropic → Gemini → OpenRouter
+    const anthropicKey = Deno.env.get("ANTHROPIC_API_KEY");
+    const geminiKey = Deno.env.get("GEMINI_API_KEY");
+    const openRouterKey = Deno.env.get("OPENROUTER_API_KEY");
 
-    if (!response.ok) {
-      const errBody = await response.text();
-      console.error(
-        "[interview-chat] OpenRouter error",
-        { status: response.status, body: errBody.slice(0, 500) },
-      );
-      throw new Error(
-        "OpenRouter API error: " + response.status + " - " +
-          errBody.slice(0, 300),
-      );
+    const providers: { name: string; call: () => Promise<ChatResponse> }[] = [];
+
+    if (anthropicKey) {
+      providers.push({
+        name: "Anthropic",
+        call: () => callAnthropic(systemMessage, userMessage, anthropicKey),
+      });
+    }
+    if (geminiKey) {
+      providers.push({
+        name: "Gemini",
+        call: () => callGemini(systemMessage, userMessage, geminiKey),
+      });
+    }
+    if (openRouterKey) {
+      providers.push({
+        name: "OpenRouter",
+        call: () => callOpenRouter(systemMessage, userMessage, openRouterKey),
+      });
     }
 
-    const data = await response.json();
-    const rawContent = data.choices?.[0]?.message?.content || "{}";
-
-    // Clean markdown code fences
-    let jsonStr = rawContent
-      .replace(/```json\n?/g, "")
-      .replace(/```\n?/g, "")
-      .trim();
-
-    // Try to extract JSON from surrounding text
-    const match = jsonStr.match(/\{[\s\S]*\}/);
-    if (match) {
-      jsonStr = match[0];
+    if (providers.length === 0) {
+      return jsonResponse({
+        error: "No LLM configured",
+        details:
+          "Set ANTHROPIC_API_KEY, GEMINI_API_KEY, or OPENROUTER_API_KEY secret.",
+      }, 503);
     }
 
-    let reply: ChatResponse;
-    try {
-      reply = JSON.parse(jsonStr);
-    } catch {
-      console.error(
-        "[interview-chat] Could not parse JSON from model response",
-        jsonStr.slice(0, 300),
-      );
-      // Fallback: wrap the raw text as a safe message
-      reply = {
-        message: sanitizeText(
-          rawContent
-            .replace(/```[\s\S]*?```/g, "")
-            .replace(/\*{1,2}/g, "")
-            .trim()
-            .slice(0, 500),
-        ) || "Let me continue — please tell me more about your experience.",
-        stage: "core",
-        done: false,
-      };
+    let lastError: Error | null = null;
+    for (const provider of providers) {
+      try {
+        const reply = await provider.call();
+        console.log("[interview-chat] Used provider", provider.name);
+        return jsonResponse(reply);
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        console.error(
+          `[interview-chat] ${provider.name} failed`,
+          lastError.message,
+        );
+        // Fall through to next provider
+      }
     }
 
-    // Validate stage
-    const validStages = [
-      "greeting",
-      "introduction",
-      "background",
-      "core",
-      "follow_up",
-      "wrap_up",
-      "concluded",
-    ];
-    if (!validStages.includes(reply.stage)) {
-      reply.stage = "core";
-    }
-
-    // Sanitize and trim message
-    reply.message = sanitizeText(reply.message)
-      .replace(/\*{1,2}/g, "")
-      .replace(/\n{2,}/g, "\n")
-      .trim()
-      .slice(0, 1000);
-
-    if (!reply.message) {
-      reply.message =
-        "Thanks for sharing that. Let me ask you about another aspect of your experience.";
-    }
-
-    return jsonResponse(reply);
+    // All providers failed
+    throw lastError || new Error("All LLM providers failed");
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     console.error("[interview-chat] unhandled error", message);

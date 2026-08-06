@@ -79,7 +79,6 @@ export default function InterviewSession() {
   const [typedDraft, setTypedDraft] = useState("");
   const [confirmEnd, setConfirmEnd] = useState(false);
   const [duration, setDuration] = useState(0);
-  const [startedAt, setStartedAt] = useState<number | null>(null);
 
   const historyRef = useRef<ChatMessage[]>([]);
   const busyRef = useRef(false);
@@ -89,7 +88,6 @@ export default function InterviewSession() {
   const {
     supported: speechSupported,
     error: speechError,
-    isListening,
     speechActive,
     liveCaption: hookCaption,
     startSession,
@@ -159,15 +157,18 @@ export default function InterviewSession() {
     }, 3000);
   }, [endSession, navigate, plan, id, duration]);
 
-  const startListening = useCallback(() => {
-    if (textMode) {
-      setPhase("awaiting");
-      return;
-    }
-    setPhase("listening");
-    clearError();
-    startCapture();
-  }, [textMode, startCapture, clearError]);
+  const startListening = useCallback(
+    (opts?: { forceText?: boolean }) => {
+      if (opts?.forceText || textMode) {
+        setPhase("awaiting");
+        return;
+      }
+      setPhase("listening");
+      clearError();
+      startCapture();
+    },
+    [textMode, startCapture, clearError],
+  );
 
   /* ── Turn callback ── */
 
@@ -234,6 +235,10 @@ export default function InterviewSession() {
         const ok = await startSession();
         if (!ok) {
           setTextMode(true);
+          // Don't call startListening here — voice failed, text mode is now
+          // set, let the greeting flow happen before prompting user.
+        } else {
+          // Voice ready — proceed
         }
       }
       if (abortedRef.current) return;
@@ -458,7 +463,7 @@ export default function InterviewSession() {
     ended: ["Interview complete", false],
   } as const;
 
-  const [statusText, statusActive] = phaseLabel[phase] ?? [
+  const [statusText] = phaseLabel[phase] ?? [
     "",
     false,
   ];
