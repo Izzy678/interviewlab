@@ -10,7 +10,6 @@ import InterviewSetup from "@/pages/InterviewSetup";
 import PreparingRoom from "@/pages/PreparingRoom";
 import InterviewSession from "@/pages/InterviewSession";
 import InterviewReport from "@/pages/InterviewReport";
-import InterviewPlan from "@/pages/InterviewPlan";
 
 export default function App() {
   return (
@@ -28,7 +27,6 @@ export default function App() {
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/setup" element={<InterviewSetup />} />
               <Route path="/preparing" element={<PreparingRoom />} />
-              <Route path="/plan" element={<InterviewPlan />} />
               <Route path="/report/:id" element={<InterviewReport />} />
             </Route>
             {/* Full-screen immersive voice interview — no app header */}

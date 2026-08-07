@@ -42,6 +42,8 @@
   --animate-accordion-up: accordion-up 0.2s ease-out;
   --animate-speaking: speaking 0.9s ease-in-out infinite;
   --animate-fade-up: fade-up 0.65s cubic-bezier(0.22, 1, 0.36, 1) both;
+  --animate-fade-in: fade-in 0.45s ease-out both;
+  --animate-page-exit: page-exit 0.5s ease-in both;
   --animate-breathe: breathe 3s ease-in-out infinite;
   --animate-drift: drift 12s ease-in-out infinite alternate;
   --animate-prep-progress: prep-progress 1.6s ease-in-out infinite;
@@ -64,6 +66,24 @@
     to {
       opacity: 1;
       transform: translateY(0);
+    }
+  }
+
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  @keyframes page-exit {
+    from {
+      opacity: 1;
+    }
+    to {
+      opacity: 0;
     }
   }
 
@@ -181,8 +201,18 @@
     text-wrap: balance;
   }
 
+  .animate-fade-in {
+    animation: var(--animate-fade-in);
+  }
+
+  .page-exit {
+    animation: var(--animate-page-exit);
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .animate-fade-up,
+    .animate-fade-in,
+    .page-exit,
     .animate-breathe,
     .animate-drift,
     .animate-speaking,

@@ -27,7 +27,7 @@ export function CtaSection() {
             className="group w-full bg-background text-foreground hover:bg-background/90 lg:w-auto"
           >
             <Link to="/setup">
-              Start an interview
+              Enter the room
               <ArrowRight className="transition-transform group-hover:translate-x-0.5" />
             </Link>
           </Button>
