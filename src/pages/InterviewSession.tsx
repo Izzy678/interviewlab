@@ -9,6 +9,8 @@ import {
   Send,
   RefreshCw,
   Keyboard,
+  AlertCircle,
+  Wifi,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/common/EmptyState";
@@ -18,6 +20,7 @@ import {
   Waveform,
 } from "@/components/studio/StudioPrimitives";
 import { useSpeechRecognition } from "@/hooks/useSpeechRecognition";
+import { useJoinChecks, type CheckState } from "@/hooks/useJoinChecks";
 import { speak, stopSpeaking, ttsSupported } from "@/lib/tts";
 import {
   fetchInterviewReply,
@@ -146,6 +149,19 @@ export default function InterviewSession() {
     1,
     Math.max(0, (idleMs - 3000) / Math.max(1, endOfSpeechMs - 3000)),
   );
+
+  /* ── Mic + network pre-join checks ── */
+  const {
+    mic: joinMic,
+    network: joinNetwork,
+    checking: joinChecking,
+    recheck: recheckJoin,
+  } = useJoinChecks({ enabled: phase === "idle", includeMic: !textMode });
+
+  const joinDisabled =
+    joinChecking ||
+    joinNetwork.state !== "ready" ||
+    (!textMode && joinMic.state !== "ready");
 
   /* ── Duration timer ── */
   useEffect(() => {
@@ -443,6 +459,63 @@ export default function InterviewSession() {
 
   /* ── Idle overlay (start screen) ── */
   if (phase === "idle") {
+    /* ── Helper: render one check row ── */
+    const CheckRow = ({
+      icon,
+      state,
+      label,
+      error,
+      quiet,
+    }: {
+      icon: React.ReactNode;
+      state: CheckState;
+      label: string;
+      error?: string;
+      quiet?: boolean;
+    }) => (
+      <div className="flex items-start gap-3 rounded-lg border border-white/[0.07] bg-white/[0.03] px-4 py-3 text-left">
+        <span className="mt-0.5 shrink-0 text-white/40" aria-hidden>
+          {icon}
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium text-white/80">{label}</p>
+          {state === "ready" && !quiet && (
+            <p className="text-xs text-emerald-400/70">Ready</p>
+          )}
+          {state === "ready" && quiet && (
+            <p className="text-xs text-amber-400/70">
+              Connected — no sound detected. Check your mic is unmuted.
+            </p>
+          )}
+          {state === "checking" && (
+            <p className="text-xs text-white/35">Checking…</p>
+          )}
+          {state === "error" && error && (
+            <div className="mt-1 space-y-2">
+              <p className="text-xs leading-5 text-red-300">{error}</p>
+              <button
+                type="button"
+                onClick={recheckJoin}
+                className="inline-flex cursor-pointer items-center gap-1 text-xs font-medium text-red-300 underline transition-colors hover:text-white"
+              >
+                <RefreshCw className="h-3 w-3" />
+                Re-check
+              </button>
+            </div>
+          )}
+        </div>
+        <span className="mt-0.5 shrink-0" aria-hidden>
+          {state === "checking" ? (
+            <Loader2 className="h-4 w-4 animate-spin text-white/35" />
+          ) : state === "ready" ? (
+            <CheckCircle2 className="h-4 w-4 text-emerald-400" />
+          ) : (
+            <AlertCircle className="h-4 w-4 text-red-400" />
+          )}
+        </span>
+      </div>
+    );
+
     return (
       <div
         className={`fixed inset-0 z-40 flex min-h-screen items-center justify-center overflow-hidden bg-[#111210] p-5 text-[#f2f1ec] ${
@@ -468,19 +541,63 @@ export default function InterviewSession() {
             active={false}
             className="mx-auto my-10 max-w-xs text-white/45"
           />
+
+          {/* ── Check panel ── */}
+          <div
+            className="mx-auto mb-8 max-w-xs space-y-2"
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            {!textMode && (
+              <CheckRow
+                icon={<Mic className="h-4 w-4" />}
+                state={joinMic.state}
+                label="Microphone"
+                error={joinMic.error}
+                quiet={joinMic.quiet}
+              />
+            )}
+            <CheckRow
+              icon={<Wifi className="h-4 w-4" />}
+              state={joinNetwork.state}
+              label="Network"
+              error={joinNetwork.error}
+            />
+          </div>
+
           <div className="mx-auto max-w-xs space-y-3">
+            {joinChecking && (
+              <p className="text-xs text-white/30">
+                Running pre-join checks…
+              </p>
+            )}
             <Button
               size="lg"
               onClick={begin}
-              className="h-12 w-full gap-2 rounded-full bg-[#f2f1ec] text-[#111210] hover:bg-white"
+              disabled={joinDisabled}
+              className="h-12 w-full gap-2 rounded-full bg-[#f2f1ec] text-[#111210] hover:bg-white disabled:opacity-40"
             >
-              <Mic className="h-4 w-4" />
-              Join interview
+              {joinChecking ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Checking…
+                </>
+              ) : !textMode && joinMic.state === "error" ? (
+                <>
+                  <Mic className="h-4 w-4" />
+                  Can't join with mic
+                </>
+              ) : (
+                <>
+                  <Mic className="h-4 w-4" />
+                  Join interview
+                </>
+              )}
             </Button>
             <button
               type="button"
               onClick={() => setTextMode((t) => !t)}
-              className="mx-auto inline-flex items-center gap-2 text-xs text-white/40 transition-colors hover:text-white/75"
+              className="mx-auto inline-flex cursor-pointer items-center gap-2 text-xs text-white/40 transition-colors hover:text-white/75"
             >
               <Keyboard className="h-3.5 w-3.5" />
               {textMode
