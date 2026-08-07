@@ -25,6 +25,7 @@ import {
   type ChatMessage,
   type InterviewPlanData,
   type InterviewReply,
+  type InterviewStage,
 } from "@/lib/interview";
 import { useAuth } from "@/contexts/AuthContext";
 import { saveInterviewSession } from "@/lib/sessions";
@@ -41,6 +42,58 @@ type Phase =
   | "concluding"
   | "ended";
 
+function formatStageProgress(
+  stage: InterviewStage | undefined,
+  plan: InterviewPlanData,
+  userTurns: number,
+): string {
+  const secs = plan.sections;
+  const recruiterN = secs.recruiter_questions?.questions?.length ?? 3;
+  const behavioralN = secs.behavioral_questions?.questions?.length ?? 4;
+  const technicalN = secs.technical_questions?.questions?.length ?? 4;
+  const followUpN = secs.follow_up_questions?.questions?.length ?? 2;
+
+  const map: Record<
+    string,
+    { label: string; total: number; offset: number }
+  > = {
+    greeting: { label: "Greeting", total: 1, offset: 0 },
+    introduction: {
+      label: "Introduction",
+      total: Math.max(1, Math.ceil(recruiterN / 2)),
+      offset: 0,
+    },
+    background: {
+      label: "Background",
+      total: Math.max(1, Math.floor(recruiterN / 2) || 1),
+      offset: Math.ceil(recruiterN / 2),
+    },
+    core: {
+      label: "Behavioral",
+      total: Math.max(1, behavioralN + technicalN),
+      offset: recruiterN,
+    },
+    follow_up: {
+      label: "Follow-up",
+      total: Math.max(1, followUpN),
+      offset: recruiterN + behavioralN + technicalN,
+    },
+    wrap_up: {
+      label: "Wrap-up",
+      total: 1,
+      offset: recruiterN + behavioralN + technicalN + followUpN,
+    },
+    concluded: { label: "Complete", total: 1, offset: 0 },
+  };
+
+  const info = map[stage ?? "introduction"] ?? map.introduction;
+  const current = Math.max(
+    1,
+    Math.min(info.total, Math.max(1, userTurns - info.offset)),
+  );
+  return `${info.label} · ${current} of ~${info.total}`;
+}
+
 /* ── Main Component ─────────────────────────────────────── */
 
 export default function InterviewSession() {
@@ -49,6 +102,9 @@ export default function InterviewSession() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const plan = location.state?.plan as InterviewPlanData | undefined;
+  const fromPreparing = Boolean(
+    (location.state as { fromPreparing?: boolean } | null)?.fromPreparing,
+  );
 
   /* ── Core state ── */
   const [phase, setPhase] = useState<Phase>("idle");
@@ -73,6 +129,8 @@ export default function InterviewSession() {
     error: speechError,
     speechActive,
     liveCaption: hookCaption,
+    idleMs,
+    endOfSpeechMs,
     startSession,
     endSession,
     startCapture,
@@ -81,6 +139,13 @@ export default function InterviewSession() {
   } = useSpeechRecognition({
     onTurnComplete: handleTurnComplete,
   });
+
+  const stillListening =
+    phase === "listening" && !speechActive && idleMs > 3000;
+  const patienceProgress = Math.min(
+    1,
+    Math.max(0, (idleMs - 3000) / Math.max(1, endOfSpeechMs - 3000)),
+  );
 
   /* ── Duration timer ── */
   useEffect(() => {
@@ -379,7 +444,11 @@ export default function InterviewSession() {
   /* ── Idle overlay (start screen) ── */
   if (phase === "idle") {
     return (
-      <div className="fixed inset-0 z-40 flex min-h-screen items-center justify-center overflow-hidden bg-[#111210] p-5 text-[#f2f1ec]">
+      <div
+        className={`fixed inset-0 z-40 flex min-h-screen items-center justify-center overflow-hidden bg-[#111210] p-5 text-[#f2f1ec] ${
+          fromPreparing ? "animate-fade-in" : ""
+        }`}
+      >
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_42%,rgba(255,255,255,0.075),transparent_34%)]" />
         <div className="relative w-full max-w-lg text-center">
           <StageLabel active className="mb-10 text-white/50">
@@ -461,34 +530,35 @@ export default function InterviewSession() {
   } as const;
 
   const [statusText] = phaseLabel[phase] ?? ["", false];
-  const stageText = lastReply?.stage
-    ? lastReply.stage.replace("_", " ")
-    : "Introduction";
+  const userTurns = conversation.filter((m) => m.role === "user").length;
+  const stageProgress = formatStageProgress(
+    lastReply?.stage,
+    plan,
+    Math.max(1, userTurns),
+  );
 
   /* ── Main session view ── */
   return (
     <div className="fixed inset-0 z-40 flex min-h-screen flex-col overflow-hidden bg-[#111210] text-[#f2f1ec]">
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_20%,rgba(255,255,255,0.045),transparent_34%)]" />
-      <header className="relative z-30 border-b border-white/10 bg-[#111210]/85 backdrop-blur-md">
-        <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-7">
-          <div className="flex min-w-0 items-center gap-3">
+      <header className="relative z-30 border-b border-white/[0.07] bg-[#111210]/80 backdrop-blur-md">
+        <div className="mx-auto flex h-12 max-w-6xl items-center justify-between px-4 sm:px-7">
+          <div className="flex min-w-0 items-center gap-2.5">
             <PresenceOrb
               active={phase === "speaking" || phase === "thinking"}
               size="sm"
             />
             <div className="min-w-0">
-              <p className="truncate text-sm font-medium text-white/90">Alexa</p>
-              <p className="truncate text-[11px] text-white/35">
-                Interviewer · {statusText}
-              </p>
+              <p className="truncate text-sm font-medium text-white/85">Alexa</p>
+              <p className="truncate text-[10px] text-white/30">{statusText}</p>
             </div>
           </div>
 
-          <div className="hidden items-center gap-6 sm:flex">
-            <StageLabel active className="capitalize text-white/50">
-              {stageText}
+          <div className="hidden items-center gap-5 sm:flex">
+            <StageLabel active className="text-white/45">
+              {stageProgress}
             </StageLabel>
-            <span className="text-xs tabular-nums text-white/40">
+            <span className="text-[11px] tabular-nums text-white/30">
               {formatDuration(duration)}
             </span>
           </div>
@@ -508,7 +578,7 @@ export default function InterviewSession() {
                   variant="ghost"
                   size="sm"
                   onClick={() => setConfirmEnd(false)}
-                  className="h-8 text-xs text-white/55 hover:bg-white/10 hover:text-white"
+                  className="h-8 text-xs text-white/45 hover:bg-white/10 hover:text-white"
                 >
                   Cancel
                 </Button>
@@ -518,32 +588,33 @@ export default function InterviewSession() {
                 variant="ghost"
                 size="sm"
                 onClick={handleEnd}
-                className="gap-1.5 text-white/40 hover:bg-white/10 hover:text-white"
+                className="gap-1.5 text-white/30 hover:bg-white/10 hover:text-white/80"
                 aria-label="End interview"
               >
-                <PhoneOff className="h-4 w-4" />
-                <span>End</span>
+                <PhoneOff className="h-3.5 w-3.5" />
+                <span className="text-xs">End</span>
               </Button>
             )}
           </div>
         </div>
       </header>
 
-      <div className="relative mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col px-5 sm:px-8">
+      <div className="relative mx-auto flex min-h-0 w-full max-w-2xl flex-1 flex-col px-5 sm:px-8">
         <div
           ref={scrollRef}
-          className="flex-1 space-y-9 overflow-y-auto py-10 scroll-smooth [scrollbar-width:none] sm:py-14"
+          className="flex-1 space-y-0 overflow-y-auto py-10 scroll-smooth [scrollbar-width:none] sm:py-14"
           role="log"
           aria-live="polite"
           aria-label="Interview transcript"
         >
           {conversation.map((msg, i) => {
             const isAi = msg.role === "assistant";
+            const isRecent = i >= conversation.length - 2;
             return (
               <div
                 key={i}
-                className={`max-w-2xl transition-opacity ${
-                  isAi ? "mr-auto" : "ml-auto w-[88%] sm:w-[78%]"
+                className={`max-w-2xl border-t border-white/[0.06] py-7 first:border-t-0 first:pt-0 transition-opacity ${
+                  isRecent ? "opacity-100" : "opacity-55"
                 }`}
               >
                 <p
@@ -554,10 +625,10 @@ export default function InterviewSession() {
                   {isAi ? "Alexa" : "You"}
                 </p>
                 <p
-                  className={`whitespace-pre-wrap font-heading leading-relaxed ${
+                  className={`whitespace-pre-wrap leading-relaxed ${
                     isAi
-                      ? "text-xl text-white/90 sm:text-2xl"
-                      : "text-base text-white/55 sm:text-lg"
+                      ? "font-heading text-xl text-white/90 sm:text-2xl"
+                      : "text-sm text-white/45 sm:text-[15px]"
                   }`}
                 >
                   {msg.content}
@@ -567,7 +638,7 @@ export default function InterviewSession() {
           })}
 
           {phase === "thinking" && (
-            <div className="mr-auto max-w-2xl">
+            <div className="max-w-2xl border-t border-white/[0.06] py-7">
               <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-white/30">
                 Alexa
               </p>
@@ -579,11 +650,11 @@ export default function InterviewSession() {
           )}
 
           {phase === "listening" && liveCaption && (
-            <div className="ml-auto w-[88%] max-w-2xl sm:w-[78%]">
-              <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-white/20">
+            <div className="max-w-2xl border-t border-white/[0.06] py-7 opacity-100">
+              <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-white/25">
                 You · Live
               </p>
-              <p className="whitespace-pre-wrap font-heading text-base leading-relaxed text-white/55 sm:text-lg">
+              <p className="whitespace-pre-wrap text-sm leading-relaxed text-white/55 sm:text-[15px]">
                 {liveCaption}
               </p>
             </div>
@@ -591,8 +662,8 @@ export default function InterviewSession() {
         </div>
       </div>
 
-      <div className="relative border-t border-white/10 bg-[#151614] px-4 py-4">
-        <div className="mx-auto w-full max-w-3xl space-y-3">
+      <div className="relative border-t border-white/[0.07] bg-[#151614]/95 px-4 py-3.5">
+        <div className="mx-auto w-full max-w-2xl space-y-3">
         {errorBanner && (
           <div className="flex items-start justify-between gap-3 rounded-lg border border-red-400/20 bg-red-400/5 px-4 py-2.5 text-sm text-red-200">
             <span className="text-xs leading-relaxed flex-1">{errorBanner}</span>
@@ -625,29 +696,46 @@ export default function InterviewSession() {
         )}
 
         {phase === "listening" && (
-          <div className="flex items-center justify-between gap-4">
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-3">
-                <Waveform
-                  active={speechActive}
-                  className="h-7 justify-start text-white/60"
-                  bars={24}
-                />
-                <span className="hidden text-xs text-white/35 sm:inline">
-                  {speechActive ? "Capturing your answer" : "Listening"}
-                </span>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-4">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-3">
+                  <Waveform
+                    active={speechActive}
+                    className="h-7 justify-start text-white/60"
+                    bars={24}
+                  />
+                  <span className="hidden text-xs text-white/35 sm:inline">
+                    {speechActive
+                      ? "Capturing your answer"
+                      : stillListening
+                        ? "Still listening…"
+                        : "Listening"}
+                  </span>
+                </div>
               </div>
+              <button
+                onClick={() => {
+                  pauseCapture();
+                  setPhase("awaiting");
+                }}
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white/55 transition-all hover:bg-white/10 active:scale-95"
+                aria-label="Stop recording"
+              >
+                <MicOff className="h-4 w-4" />
+              </button>
             </div>
-            <button
-              onClick={() => {
-                pauseCapture();
-                setPhase("awaiting");
-              }}
-              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-white/15 bg-white/10 text-white/75 transition-all hover:bg-white/15 active:scale-95"
-              aria-label="Stop recording"
-            >
-              <MicOff className="h-5 w-5" />
-            </button>
+            {stillListening && (
+              <div
+                className="h-0.5 overflow-hidden rounded-full bg-white/10 motion-safe:transition-opacity"
+                aria-hidden
+              >
+                <div
+                  className="h-full rounded-full bg-white/35 transition-[width] duration-500 ease-out motion-reduce:transition-none"
+                  style={{ width: `${patienceProgress * 100}%` }}
+                />
+              </div>
+            )}
           </div>
         )}
 
@@ -704,7 +792,7 @@ export default function InterviewSession() {
           </div>
         )}
         {(phase === "connecting" || phase === "speaking") && (
-          <div className="flex h-11 items-center justify-between">
+          <div className="flex h-10 items-center justify-between">
             <div className="flex items-center gap-3">
               <Waveform
                 active={phase === "speaking"}
@@ -713,7 +801,7 @@ export default function InterviewSession() {
               />
               <span className="text-xs text-white/35">{statusText}</span>
             </div>
-            <span className="text-xs tabular-nums text-white/30 sm:hidden">
+            <span className="text-[11px] tabular-nums text-white/25 sm:hidden">
               {formatDuration(duration)}
             </span>
           </div>

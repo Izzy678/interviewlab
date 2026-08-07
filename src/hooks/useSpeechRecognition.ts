@@ -39,7 +39,7 @@ interface UseSpeechRecognitionOptions {
 
 export function useSpeechRecognition({
   onTurnComplete,
-  endOfSpeechMs = 2000,
+  endOfSpeechMs = 5000,
   noSpeechMs = 15000,
   maxTurnMs = 60000,
 }: UseSpeechRecognitionOptions) {
@@ -47,6 +47,7 @@ export function useSpeechRecognition({
   const [speechActive, setSpeechActive] = useState(false);
   const [liveCaption, setLiveCaption] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [idleMs, setIdleMs] = useState(0);
 
   const wsRef = useRef<WebSocket | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -76,6 +77,7 @@ export function useSpeechRecognition({
     captureActiveRef.current = false;
     setIsListening(false);
     setSpeechActive(false);
+    setIdleMs(0);
     finalRef.current = "";
     interimRef.current = "";
     setLiveCaption("");
@@ -85,10 +87,14 @@ export function useSpeechRecognition({
   /* Silence watchdog — checks every 500ms while capturing */
   useEffect(() => {
     const watchdog = window.setInterval(() => {
-      if (!captureActiveRef.current) return;
+      if (!captureActiveRef.current) {
+        setIdleMs(0);
+        return;
+      }
       const now = Date.now();
       const sinceSpeech = now - lastSpeechAtRef.current;
       const sinceStart = now - turnStartedAtRef.current;
+      setIdleMs(sinceSpeech);
 
       /* Combine finals + latest interim for the full turn text */
       const combined = [finalRef.current.trim(), interimRef.current.trim()]
@@ -397,6 +403,7 @@ export function useSpeechRecognition({
     captureActiveRef.current = false;
     setIsListening(false);
     setSpeechActive(false);
+    setIdleMs(0);
   }, []);
 
   const clearError = useCallback(() => setError(null), []);
@@ -414,6 +421,8 @@ export function useSpeechRecognition({
     isListening,
     speechActive,
     liveCaption,
+    idleMs,
+    endOfSpeechMs,
     startSession,
     endSession,
     startCapture,

@@ -1,5 +1,13 @@
+import { useEffect, useState } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
-import { LayoutDashboard, Plus, LogOut, Menu } from "lucide-react";
+import {
+  LayoutDashboard,
+  Plus,
+  LogOut,
+  Menu,
+  PanelLeftClose,
+  PanelLeftOpen,
+} from "lucide-react";
 import { Brand } from "@/components/common/Brand";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -12,12 +20,20 @@ import {
 import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
 
+const STORAGE_KEY = "interviewlab.sidebar.collapsed";
+
 const navItems = [
   { label: "Workspace", to: "/dashboard", icon: LayoutDashboard },
   { label: "New interview", to: "/setup", icon: Plus },
 ];
 
-function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
+function SidebarNav({
+  collapsed,
+  onNavigate,
+}: {
+  collapsed?: boolean;
+  onNavigate?: () => void;
+}) {
   const location = useLocation();
 
   return (
@@ -33,16 +49,18 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
           <Link
             key={item.to}
             to={item.to}
+            title={collapsed ? item.label : undefined}
             onClick={onNavigate}
             className={cn(
-              "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
+              "flex items-center gap-3 rounded-lg py-2.5 text-sm font-medium transition-colors",
+              collapsed ? "justify-center px-2" : "px-3",
               active
                 ? "bg-foreground text-background"
                 : "text-muted-foreground hover:bg-muted hover:text-foreground",
             )}
           >
             <Icon className="h-4 w-4 shrink-0" />
-            {item.label}
+            {!collapsed && <span>{item.label}</span>}
           </Link>
         );
       })}
@@ -50,7 +68,30 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   );
 }
 
-export function AppSidebar() {
+export function useSidebarCollapsed() {
+  const [collapsed, setCollapsed] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem(STORAGE_KEY) === "1";
+  });
+
+  useEffect(() => {
+    window.localStorage.setItem(STORAGE_KEY, collapsed ? "1" : "0");
+  }, [collapsed]);
+
+  return {
+    collapsed,
+    setCollapsed,
+    toggleCollapsed: () => setCollapsed((value) => !value),
+  };
+}
+
+export function AppSidebar({
+  collapsed,
+  onToggleCollapsed,
+}: {
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
+}) {
   const { user, profile, signOut } = useAuth();
   const navigate = useNavigate();
 
@@ -70,33 +111,79 @@ export function AppSidebar() {
 
   return (
     <>
-      <aside className="fixed inset-y-0 left-0 z-40 hidden w-60 flex-col border-r border-border bg-card px-4 py-5 lg:flex">
-        <Brand to="/dashboard" className="mb-8 px-2" />
-        <SidebarNav />
-        <div className="mt-auto space-y-3 border-t border-border pt-4">
-          <div className="flex items-center gap-3 px-2">
+      <aside
+        className={cn(
+          "fixed inset-y-0 left-0 z-40 hidden flex-col border-r border-border bg-card py-5 transition-[width] duration-200 ease-out lg:flex",
+          collapsed ? "w-[72px] px-2.5" : "w-60 px-4",
+        )}
+      >
+        <div
+          className={cn(
+            "mb-6 flex items-center",
+            collapsed ? "flex-col gap-3" : "justify-between gap-2 px-1",
+          )}
+        >
+          <Brand to="/dashboard" compact={collapsed} />
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            onClick={onToggleCollapsed}
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            className="h-8 w-8 shrink-0 text-muted-foreground"
+          >
+            {collapsed ? (
+              <PanelLeftOpen className="h-4 w-4" />
+            ) : (
+              <PanelLeftClose className="h-4 w-4" />
+            )}
+          </Button>
+        </div>
+
+        <SidebarNav collapsed={collapsed} />
+
+        <div
+          className={cn(
+            "mt-auto space-y-3 border-t border-border pt-4",
+            collapsed && "flex flex-col items-center",
+          )}
+        >
+          <div
+            className={cn(
+              "flex items-center gap-3",
+              collapsed ? "justify-center" : "px-2",
+            )}
+            title={collapsed ? profile?.name || user?.email || "Account" : undefined}
+          >
             <Avatar className="h-8 w-8 border border-border">
               <AvatarFallback className="bg-muted text-[11px] font-semibold">
                 {initials}
               </AvatarFallback>
             </Avatar>
-            <div className="min-w-0">
-              <p className="truncate text-sm font-medium">
-                {profile?.name || "Your workspace"}
-              </p>
-              <p className="truncate text-[11px] text-muted-foreground">
-                {user?.email}
-              </p>
-            </div>
+            {!collapsed && (
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium">
+                  {profile?.name || "Your workspace"}
+                </p>
+                <p className="truncate text-[11px] text-muted-foreground">
+                  {user?.email}
+                </p>
+              </div>
+            )}
           </div>
           <Button
             variant="ghost"
-            size="sm"
+            size={collapsed ? "icon" : "sm"}
             onClick={handleSignOut}
-            className="w-full justify-start gap-2 text-muted-foreground"
+            title={collapsed ? "Sign out" : undefined}
+            aria-label="Sign out"
+            className={cn(
+              "text-muted-foreground",
+              !collapsed && "w-full justify-start gap-2",
+            )}
           >
             <LogOut className="h-4 w-4" />
-            Sign out
+            {!collapsed && "Sign out"}
           </Button>
         </div>
       </aside>

@@ -155,9 +155,15 @@ export async function runInterviewPreparation(
   let job: ParsedJobSummary | null = null;
   let jobText = payload.jobDescription?.trim() || "";
 
-  const setStatus = (id: PrepStageId, status: PrepStageStatus) => {
+  const setStatus = (
+    id: PrepStageId,
+    status: PrepStageStatus,
+    detail?: string,
+  ) => {
     const next = stages.map((stage) =>
-      stage.id === id ? { ...stage, status } : stage,
+      stage.id === id
+        ? { ...stage, status, ...(detail ? { detail } : {}) }
+        : stage,
     );
     stages.splice(0, stages.length, ...next);
     onProgress(
@@ -168,10 +174,24 @@ export async function runInterviewPreparation(
 
   try {
     if (payload.parsedResume) {
-      setStatus("parse_resume", "active");
+      const r = payload.parsedResume;
+      const skillHint = (r.parsed_skills || []).slice(0, 3).join(" · ");
+      setStatus(
+        "parse_resume",
+        "active",
+        r.parsed_name
+          ? `Loading ${r.parsed_name}${skillHint ? ` · ${skillHint}` : ""}`
+          : "Reusing your saved experience profile",
+      );
       await sleep(900);
       resume = payload.parsedResume;
-      setStatus("parse_resume", "done");
+      setStatus(
+        "parse_resume",
+        "done",
+        r.parsed_name
+          ? `Ready with ${r.parsed_name}'s profile`
+          : "Resume context loaded",
+      );
     } else if (payload.resumeFilePath) {
       setStatus("parse_resume", "active");
       const result = await withMinDuration(
@@ -181,11 +201,22 @@ export async function runInterviewPreparation(
         }),
       );
       resume = result.resume;
-      setStatus("parse_resume", "done");
+      const skillHint = (resume.parsed_skills || []).slice(0, 3).join(" · ");
+      setStatus(
+        "parse_resume",
+        "done",
+        resume.parsed_name
+          ? `Matched ${resume.parsed_name}${skillHint ? ` · ${skillHint}` : ""}`
+          : "Experience profile ready",
+      );
     }
 
     if (payload.jobUrl?.trim()) {
-      setStatus("fetch_job", "active");
+      setStatus(
+        "fetch_job",
+        "active",
+        `Opening ${payload.jobUrl.trim().replace(/^https?:\/\//, "").slice(0, 48)}…`,
+      );
       const result = await withMinDuration(
         invokeFunction<{
           jobDescription?: string;
@@ -198,13 +229,22 @@ export async function runInterviewPreparation(
       if (result.parsed && (result.parsed.role || result.parsed.required_skills?.length)) {
         job = result.parsed;
       }
-      setStatus("fetch_job", "done");
+      setStatus(
+        "fetch_job",
+        "done",
+        job?.role ? `Fetched posting for ${job.role}` : "Posting retrieved",
+      );
     }
 
     if (payload.jobUrl?.trim() || payload.jobDescription?.trim()) {
-      setStatus("analyze_job", "active");
+      setStatus(
+        "analyze_job",
+        "active",
+        job?.role
+          ? `Understanding ${job.role}${job.seniority ? ` · ${job.seniority}` : ""}`
+          : "Understanding the role and expectations",
+      );
       if (job) {
-        // Already structured from URL import — still hold the beat for the stage.
         await sleep(MIN_STAGE_MS);
       } else if (jobText) {
         const result = await withMinDuration(
@@ -216,10 +256,25 @@ export async function runInterviewPreparation(
       } else {
         await sleep(MIN_STAGE_MS);
       }
-      setStatus("analyze_job", "done");
+      const focus = (job?.required_skills || []).slice(0, 3).join(" · ");
+      setStatus(
+        "analyze_job",
+        "done",
+        job?.role
+          ? `Focused on ${job.role}${focus ? ` · ${focus}` : ""}`
+          : "Role context ready",
+      );
     }
 
-    setStatus("create_plan", "active");
+    const planHint =
+      job?.role ||
+      resume?.parsed_name ||
+      "your conversation";
+    setStatus(
+      "create_plan",
+      "active",
+      `Shaping Alexa’s plan for ${planHint}`,
+    );
     const resumeData = resume
       ? {
           parsed_name: resume.parsed_name,
@@ -246,7 +301,13 @@ export async function runInterviewPreparation(
         jobData,
       }),
     );
-    setStatus("create_plan", "done");
+    setStatus(
+      "create_plan",
+      "done",
+      plan.target_role
+        ? `Interview plan ready for ${plan.target_role}`
+        : "Interview strategy ready",
+    );
 
     return {
       ...emptyPlan(),

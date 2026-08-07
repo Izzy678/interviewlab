@@ -16,7 +16,7 @@ export default function Landing() {
         <Brand />
         <nav className="flex items-center gap-1.5" aria-label="Main navigation">
           {loading ? null : user ? (
-            <Button asChild size="sm">
+            <Button asChild size="sm" variant="outline">
               <Link to="/dashboard">Open workspace</Link>
             </Button>
           ) : (
@@ -24,8 +24,8 @@ export default function Landing() {
               <Button variant="ghost" size="sm" asChild>
                 <Link to="/signin">Sign in</Link>
               </Button>
-              <Button size="sm" asChild>
-                <Link to="/signup">Get started</Link>
+              <Button size="sm" variant="outline" asChild>
+                <Link to="/signup">Create workspace</Link>
               </Button>
             </>
           )}

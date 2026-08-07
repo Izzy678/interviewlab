@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { ArrowRight, FileText, Loader2, RotateCcw } from "lucide-react";
+import { FileText, Loader2, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/contexts/AuthContext";
 import { formatDuration } from "@/lib/interview";
@@ -79,6 +79,9 @@ export default function Dashboard() {
     };
   }, [sessions, resumes]);
 
+  const latest = sessions[0];
+  const olderSessions = sessions.slice(1);
+
   const handlePracticeAgain = async (sessionId: string) => {
     setPracticeId(sessionId);
     try {
@@ -95,7 +98,7 @@ export default function Dashboard() {
   };
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-8 animate-fade-in">
       <header>
         <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
           Workspace
@@ -103,10 +106,6 @@ export default function Dashboard() {
         <h1 className="mt-1 font-display text-3xl tracking-tight sm:text-4xl">
           {firstName ? `Hi, ${firstName}` : "Your workspace"}
         </h1>
-        <p className="mt-2 text-sm text-muted-foreground">
-          Review past sessions, reuse a resume, or start a new interview from
-          the sidebar.
-        </p>
       </header>
 
       <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -136,13 +135,49 @@ export default function Dashboard() {
         ))}
       </section>
 
+      {status === "ready" && latest && (
+        <section className="rounded-2xl border border-border bg-card p-6 sm:p-8">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+            Latest session
+          </p>
+          <h2 className="mt-3 font-display text-3xl tracking-tight sm:text-4xl">
+            {latest.target_role || "Practice interview"}
+          </h2>
+          <p className="mt-2 text-sm text-muted-foreground">
+            {formatSessionDate(latest.created_at)}
+            {latest.target_seniority ? ` · ${latest.target_seniority}` : ""}
+            {latest.duration_seconds != null
+              ? ` · ${formatDuration(latest.duration_seconds)}`
+              : ""}
+            {latest.overall_score != null ? ` · Score ${latest.overall_score}` : ""}
+          </p>
+          <div className="mt-6 flex flex-wrap gap-2">
+            <Button asChild>
+              <Link to={`/report/${latest.id}`}>Open report</Link>
+            </Button>
+            <Button
+              variant="outline"
+              disabled={practiceId === latest.id}
+              onClick={() => void handlePracticeAgain(latest.id)}
+              className="gap-1.5"
+            >
+              {practiceId === latest.id ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <RotateCcw className="h-3.5 w-3.5" />
+              )}
+              Practice again
+            </Button>
+          </div>
+        </section>
+      )}
+
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1.6fr)_minmax(260px,0.9fr)]">
         <section className="rounded-xl border border-border bg-card">
           <div className="border-b border-border px-5 py-4">
-            <h2 className="text-sm font-semibold">Recent sessions</h2>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              Open a report or practice the same role again
-            </p>
+            <h2 className="text-sm font-semibold">
+              {latest ? "Earlier sessions" : "Recent sessions"}
+            </h2>
           </div>
 
           {status === "loading" && (
@@ -154,24 +189,29 @@ export default function Dashboard() {
 
           {status === "error" && (
             <div className="px-5 py-8 text-sm text-muted-foreground">
-              Couldn&apos;t load history. Make sure the{" "}
-              <code className="text-xs">interview_sessions</code> table exists.
+              Couldn&apos;t load history.
             </div>
           )}
 
           {status === "ready" && sessions.length === 0 && (
             <div className="px-5 py-10">
               <p className="text-sm font-medium">No sessions yet</p>
-              <p className="mt-1 max-w-sm text-sm text-muted-foreground">
-                Start from <span className="font-medium text-foreground">New interview</span>{" "}
-                in the sidebar. Completed sessions will appear here.
+              <p className="mt-1 text-sm text-muted-foreground">
+                Use <span className="font-medium text-foreground">New interview</span> in
+                the sidebar.
               </p>
             </div>
           )}
 
-          {status === "ready" && sessions.length > 0 && (
+          {status === "ready" && latest && olderSessions.length === 0 && (
+            <div className="px-5 py-8 text-sm text-muted-foreground">
+              Your other sessions will appear here.
+            </div>
+          )}
+
+          {status === "ready" && olderSessions.length > 0 && (
             <ul className="divide-y divide-border">
-              {sessions.map((session) => (
+              {olderSessions.map((session) => (
                 <li
                   key={session.id}
                   className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center sm:justify-between"
@@ -182,12 +222,6 @@ export default function Dashboard() {
                     </p>
                     <p className="mt-1 text-xs text-muted-foreground">
                       {formatSessionDate(session.created_at)}
-                      {session.target_seniority
-                        ? ` · ${session.target_seniority}`
-                        : ""}
-                      {session.duration_seconds != null
-                        ? ` · ${formatDuration(session.duration_seconds)}`
-                        : ""}
                       {session.overall_score != null
                         ? ` · ${session.overall_score}`
                         : ""}
@@ -199,6 +233,7 @@ export default function Dashboard() {
                     </Button>
                     <Button
                       size="sm"
+                      variant="ghost"
                       disabled={practiceId === session.id}
                       onClick={() => void handlePracticeAgain(session.id)}
                       className="gap-1.5"
@@ -222,7 +257,7 @@ export default function Dashboard() {
             <div className="border-b border-border px-5 py-4">
               <h2 className="text-sm font-semibold">Saved resumes</h2>
               <p className="mt-0.5 text-xs text-muted-foreground">
-                Available when you start a new interview
+                Tap one to start setup with it
               </p>
             </div>
             {status === "loading" ? (
@@ -233,36 +268,35 @@ export default function Dashboard() {
             ) : resumes.length === 0 ? (
               <div className="px-5 py-8">
                 <p className="text-sm text-muted-foreground">
-                  No resumes saved yet. You can upload one during setup.
+                  None yet — upload during setup.
                 </p>
               </div>
             ) : (
               <ul className="divide-y divide-border">
                 {resumes.slice(0, 5).map((resume) => (
-                  <li key={resume.id} className="flex items-center gap-3 px-5 py-3.5">
-                    <FileText className="h-4 w-4 shrink-0 text-primary" />
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium">
-                        {resume.parsed_name || resume.file_name}
-                      </p>
-                      <p className="truncate text-xs text-muted-foreground">
-                        {resume.file_name}
-                      </p>
-                    </div>
+                  <li key={resume.id}>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        navigate("/setup", {
+                          state: { savedResumeId: resume.id },
+                        })
+                      }
+                      className="flex w-full items-center gap-3 px-5 py-3.5 text-left transition-colors hover:bg-muted/40"
+                    >
+                      <FileText className="h-4 w-4 shrink-0 text-primary" />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-medium">
+                          {resume.parsed_name || resume.file_name}
+                        </span>
+                        <span className="block truncate text-xs text-muted-foreground">
+                          {resume.file_name}
+                        </span>
+                      </span>
+                    </button>
                   </li>
                 ))}
               </ul>
-            )}
-            {resumes.length > 0 && (
-              <div className="border-t border-border px-5 py-3">
-                <Link
-                  to="/setup#resume"
-                  className="inline-flex items-center gap-1 text-xs font-semibold text-primary hover:underline"
-                >
-                  Use in new interview
-                  <ArrowRight className="h-3 w-3" />
-                </Link>
-              </div>
             )}
           </section>
         </aside>

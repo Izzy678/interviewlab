@@ -168,7 +168,7 @@ export default function InterviewReport() {
   const totalExchanges = Math.floor(conversation.length / 2);
 
   return (
-    <div className="mx-auto max-w-5xl pb-16">
+    <div className="mx-auto max-w-5xl animate-fade-in pb-16">
       <header className="flex items-start justify-between border-b border-border/70 pb-8">
         <div className="max-w-2xl">
           <StageLabel active>Interviewer feedback</StageLabel>
@@ -242,7 +242,7 @@ export default function InterviewReport() {
                   <h2 className="text-sm font-semibold">What came through well</h2>
                 </div>
                 <div className="mt-7 space-y-6">
-                  {analysis.strengths.map((s, i) => (
+                  {analysis.strengths.slice(0, 2).map((s, i) => (
                     <div key={i} className="flex items-start gap-4">
                       <span className="pt-0.5 font-heading text-sm tabular-nums text-muted-foreground/50">
                         0{i + 1}
@@ -261,7 +261,7 @@ export default function InterviewReport() {
                   <h2 className="text-sm font-semibold">Where to focus next</h2>
                 </div>
                 <div className="mt-7 space-y-6">
-                  {analysis.improvements.map((s, i) => (
+                  {analysis.improvements.slice(0, 2).map((s, i) => (
                     <div key={i} className="flex items-start gap-4">
                       <span className="pt-0.5 font-heading text-sm tabular-nums text-muted-foreground/50">
                         0{i + 1}
@@ -274,11 +274,11 @@ export default function InterviewReport() {
             )}
           </section>
 
-          <section className="border-b border-border/70 py-10">
-            <p className="mb-7 text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+          <section className="border-b border-border/70 py-8">
+            <p className="mb-5 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground/70">
               Conversation signals
             </p>
-            <div className="grid grid-cols-2 gap-y-8 sm:grid-cols-5">
+            <div className="grid grid-cols-2 gap-y-5 sm:grid-cols-5">
               {[
                 ["Overall", analysis.overall_score],
                 ["Clarity", analysis.metrics.clarity],
@@ -288,10 +288,14 @@ export default function InterviewReport() {
               ].map(([label, score]) => (
                 <div
                   key={label as string}
-                  className="border-l border-border pl-4 first:border-l-0 first:pl-0"
+                  className="border-l border-border/60 pl-3 first:border-l-0 first:pl-0"
                 >
-                  <p className="font-heading text-3xl tabular-nums">{score as number}</p>
-                  <p className="mt-1 text-xs text-muted-foreground">{label as string}</p>
+                  <p className="font-heading text-xl tabular-nums text-muted-foreground">
+                    {score as number}
+                  </p>
+                  <p className="mt-0.5 text-[11px] text-muted-foreground/70">
+                    {label as string}
+                  </p>
                 </div>
               ))}
             </div>

@@ -45,6 +45,7 @@ export default function PreparingRoom() {
   const [activeId, setActiveId] = useState<PrepStageId | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
+  const [exiting, setExiting] = useState(false);
   const runIdRef = useRef(0);
 
   const hasContext =
@@ -72,9 +73,15 @@ export default function PreparingRoom() {
 
       setReady(true);
       setActiveId(null);
-      await new Promise((r) => setTimeout(r, 900));
+      await new Promise((r) => setTimeout(r, 700));
       if (runId !== runIdRef.current) return;
-      navigate("/session/1", { state: { plan }, replace: true });
+      setExiting(true);
+      await new Promise((r) => setTimeout(r, 500));
+      if (runId !== runIdRef.current) return;
+      navigate("/session/1", {
+        state: { plan, fromPreparing: true },
+        replace: true,
+      });
     } catch (err) {
       if (runId !== runIdRef.current) return;
       setError(err instanceof Error ? err.message : "Something went wrong.");
@@ -114,7 +121,11 @@ export default function PreparingRoom() {
         : "Preparing the room…";
 
   return (
-    <div className="relative mx-auto flex min-h-[78vh] max-w-2xl flex-col items-center justify-center px-6 py-16">
+    <div
+      className={`relative mx-auto flex min-h-[78vh] max-w-2xl flex-col items-center justify-center px-6 py-16 transition-opacity duration-500 ease-out ${
+        exiting ? "page-exit opacity-0" : "animate-fade-in opacity-100"
+      }`}
+    >
       <div className="pointer-events-none absolute inset-0 -z-10 overflow-hidden">
         <div className="absolute left-1/2 top-[18%] h-64 w-64 -translate-x-1/2 rounded-full bg-primary/8 blur-3xl animate-breathe" />
         <div className="absolute left-[18%] top-[42%] h-1.5 w-1.5 animate-drift rounded-full bg-primary/25" />

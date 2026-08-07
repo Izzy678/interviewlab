@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, type ChangeEvent } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import {
   Upload,
   Link,
@@ -25,6 +25,7 @@ type UploadStatus = "idle" | "uploading" | "ready" | "error";
 
 export default function InterviewSetup() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { user } = useAuth();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [currentStep, setCurrentStep] = useState(0);
@@ -41,6 +42,15 @@ export default function InterviewSetup() {
   );
   const [savedResumes, setSavedResumes] = useState<SavedResume[]>([]);
   const [resumesLoading, setResumesLoading] = useState(false);
+  const appliedResumeIdRef = useRef<string | null>(null);
+
+  const selectSavedResume = (resume: SavedResume) => {
+    setResumeFilePath(resume.file_path);
+    setFileName(resume.file_name || "resume.pdf");
+    setParsedResume(toParsedResumeSummary(resume));
+    setUploadStatus("ready");
+    setUploadError("");
+  };
 
   useEffect(() => {
     if (!user) {
@@ -51,7 +61,21 @@ export default function InterviewSetup() {
     setResumesLoading(true);
     listUserResumes(user.id)
       .then((rows) => {
-        if (!cancelled) setSavedResumes(rows);
+        if (cancelled) return;
+        setSavedResumes(rows);
+        const savedResumeId = (location.state as { savedResumeId?: string } | null)
+          ?.savedResumeId;
+        if (
+          savedResumeId &&
+          appliedResumeIdRef.current !== savedResumeId
+        ) {
+          const match = rows.find((r) => r.id === savedResumeId);
+          if (match) {
+            appliedResumeIdRef.current = savedResumeId;
+            selectSavedResume(match);
+            setCurrentStep(0);
+          }
+        }
       })
       .catch(() => {
         if (!cancelled) setSavedResumes([]);
@@ -62,7 +86,7 @@ export default function InterviewSetup() {
     return () => {
       cancelled = true;
     };
-  }, [user]);
+  }, [user, location.state]);
 
   useEffect(() => {
     if (window.location.hash === "#resume") {
@@ -74,14 +98,6 @@ export default function InterviewSetup() {
     Boolean(resumeFilePath) ||
     Boolean(jobUrl.trim()) ||
     Boolean(jobDescription.trim());
-
-  const selectSavedResume = (resume: SavedResume) => {
-    setResumeFilePath(resume.file_path);
-    setFileName(resume.file_name || "resume.pdf");
-    setParsedResume(toParsedResumeSummary(resume));
-    setUploadStatus("ready");
-    setUploadError("");
-  };
 
   const handleFileSelect = async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -176,7 +192,7 @@ export default function InterviewSetup() {
       : "");
 
   return (
-    <div className="mx-auto max-w-5xl pb-16">
+    <div className="mx-auto max-w-5xl animate-fade-in pb-16">
       <header className="mb-10 max-w-2xl">
         <p className="mb-3 text-xs font-semibold uppercase tracking-[0.2em] text-primary">
           Preparation room
