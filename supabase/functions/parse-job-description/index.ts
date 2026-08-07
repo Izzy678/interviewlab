@@ -3,7 +3,7 @@ import {
   callGeminiText,
   extractJsonObject,
   requireGeminiKey,
-} from "../shared/gemini";
+} from "../_shared/gemini.ts";
 
 interface ParsedJobDescription {
   role: string;
@@ -27,6 +27,11 @@ function sanitizeText(value: string): string {
 function sanitizeArray(values: unknown): string[] {
   if (!Array.isArray(values)) return [];
   return values.map((v) => sanitizeText(String(v ?? ""))).filter(Boolean);
+}
+
+/** Truncate by Unicode code points so we never split emoji / surrogate pairs. */
+function truncateText(value: string, maxChars: number): string {
+  return sanitizeText(Array.from(value).slice(0, maxChars).join(""));
 }
 
 function isEmptyParsed(parsed: ParsedJobDescription): boolean {
@@ -114,7 +119,7 @@ Deno.serve(async (req: Request) => {
     // Gemini only — do not fall back to rate-limited OpenRouter
     requireGeminiKey();
     const { parsed, rawContent } = await extractWithGemini(
-      sanitizedText.slice(0, 8000),
+      truncateText(sanitizedText, 8000),
     );
     console.log("[parse-job-description] Used Gemini", parsed);
 
@@ -125,8 +130,8 @@ Deno.serve(async (req: Request) => {
           details:
             "The model could not find role/skills/responsibilities in the provided text.",
           parsed,
-          geminiRaw: rawContent.slice(0, 1500),
-          textPreview: sanitizedText.slice(0, 400),
+          geminiRaw: truncateText(rawContent, 1500),
+          textPreview: truncateText(sanitizedText, 400),
         },
         422,
       );
@@ -134,7 +139,7 @@ Deno.serve(async (req: Request) => {
 
     const insertPayload = {
       user_id: user.id,
-      raw_text: sanitizedText.slice(0, 2000),
+      raw_text: truncateText(sanitizedText, 2000),
       parsed_role: sanitizeText(parsed.role),
       parsed_seniority: sanitizeText(parsed.seniority),
       parsed_required_skills: sanitizeArray(parsed.required_skills),
@@ -143,92 +148,33 @@ Deno.serve(async (req: Request) => {
       parsed_at: new Date().toISOString(),
     };
 
-    let bodyStr: string;
-    try {
-      bodyStr = JSON.stringify(insertPayload);
-    } catch (stringifyErr) {
-      console.error("[parse-job-description] JSON.stringify failed", stringifyErr);
-      return jsonResponse(
-        {
-          error: "Failed to serialize job description for save",
-          details:
-            stringifyErr instanceof Error
-              ? stringifyErr.message
-              : "stringify failed",
-          parsed,
-          geminiRaw: rawContent.slice(0, 1500),
-          textPreview: sanitizedText.slice(0, 400),
-        },
-        500,
+    const { data: jdRecord, error: insertError } = await supabase
+      .from("job_descriptions")
+      .insert(insertPayload)
+      .select()
+      .single();
+
+    if (insertError) {
+      // Parsing succeeded — return structured fields so preparing room can continue.
+      console.error(
+        "[parse-job-description] insert failed:",
+        insertError.message,
+        insertError,
       );
+      return jsonResponse({
+        jobDescription: null,
+        parsed,
+        saveError: insertError.message,
+        geminiRaw: truncateText(rawContent, 1500),
+        textPreview: truncateText(sanitizedText, 400),
+      });
     }
 
-    const insertRes = await fetch(`${supabaseUrl}/rest/v1/job_descriptions`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        apikey: serviceRoleKey,
-        Authorization: `Bearer ${serviceRoleKey}`,
-        Prefer: "return=representation",
-      },
-      body: bodyStr,
-    });
-
-    const insertText = await insertRes.text();
-    console.log("[parse-job-description] insert response", {
-      status: insertRes.status,
-      body: insertText.slice(0, 500),
-    });
-
-    if (!insertRes.ok) {
-      let insertError: unknown = insertText;
-      try {
-        insertError = JSON.parse(insertText);
-      } catch {
-        // keep raw text
-      }
-
-      return jsonResponse(
-        {
-          error: "Failed to save parsed job description",
-          details:
-            typeof insertError === "object" &&
-            insertError &&
-            "message" in insertError
-              ? String((insertError as { message: string }).message)
-              : insertText.slice(0, 300),
-          insertStatus: insertRes.status,
-          insertError,
-          parsed,
-          geminiRaw: rawContent.slice(0, 1500),
-          textPreview: sanitizedText.slice(0, 400),
-        },
-        500,
-      );
-    }
-
-    let rows: unknown[];
-    try {
-      rows = JSON.parse(insertText);
-    } catch {
-      return jsonResponse(
-        {
-          error: "Insert succeeded but response was not JSON",
-          details: insertText.slice(0, 300),
-          parsed,
-          geminiRaw: rawContent.slice(0, 1500),
-          textPreview: sanitizedText.slice(0, 400),
-        },
-        500,
-      );
-    }
-
-    const jdRecord = Array.isArray(rows) ? rows[0] : rows;
     return jsonResponse({
       jobDescription: jdRecord,
       parsed,
-      geminiRaw: rawContent.slice(0, 1500),
-      textPreview: sanitizedText.slice(0, 400),
+      geminiRaw: truncateText(rawContent, 1500),
+      textPreview: truncateText(sanitizedText, 400),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";

@@ -4,7 +4,7 @@ import {
   callGeminiText,
   extractJsonObject,
   requireGeminiKey,
-} from "../shared/gemini";
+} from "../_shared/gemini.ts";
 
 interface ParsedResume {
   name: string;

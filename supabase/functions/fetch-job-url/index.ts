@@ -1,5 +1,5 @@
 import { createClient } from "jsr:@supabase/supabase-js@2";
-import { callGeminiText } from "../shared/gemini";
+import { callGeminiText } from "../_shared/gemini.ts";
 
 interface ParsedJobDescription {
   role: string;
