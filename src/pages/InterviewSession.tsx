@@ -4,16 +4,19 @@ import {
   Mic,
   MicOff,
   PhoneOff,
-  ArrowLeft,
   Loader2,
   CheckCircle2,
   Send,
-  MessageSquareText,
-  Sparkles,
   RefreshCw,
+  Keyboard,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/common/EmptyState";
+import {
+  PresenceOrb,
+  StageLabel,
+  Waveform,
+} from "@/components/studio/StudioPrimitives";
 import { useSpeechRecognition } from "@/hooks/useSpeechRecognition";
 import { speak, stopSpeaking, ttsSupported } from "@/lib/tts";
 import {
@@ -23,6 +26,8 @@ import {
   type InterviewPlanData,
   type InterviewReply,
 } from "@/lib/interview";
+import { useAuth } from "@/contexts/AuthContext";
+import { saveInterviewSession } from "@/lib/sessions";
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -36,38 +41,13 @@ type Phase =
   | "concluding"
   | "ended";
 
-/* ── Helper Components ─────────────────────────────────── */
-
-function SpeakingBars({ active }: { active: boolean }) {
-  return (
-    <span
-      className={`inline-flex items-end gap-[3px] h-4 ${
-        active ? "" : "opacity-30"
-      }`}
-      aria-hidden="true"
-    >
-      {[0, 1, 2].map((i) => (
-        <span
-          key={i}
-          className={`w-[3px] rounded-full bg-current origin-bottom ${
-            active ? "animate-speaking motion-reduce:animate-none" : ""
-          }`}
-          style={{
-            height: "100%",
-            animationDelay: active ? `${i * 0.15}s` : "0s",
-          }}
-        />
-      ))}
-    </span>
-  );
-}
-
 /* ── Main Component ─────────────────────────────────────── */
 
 export default function InterviewSession() {
   const { id } = useParams<{ id: string }>();
   const location = useLocation();
   const navigate = useNavigate();
+  const { user } = useAuth();
   const plan = location.state?.plan as InterviewPlanData | undefined;
 
   /* ── Core state ── */
@@ -147,18 +127,35 @@ export default function InterviewSession() {
     busyRef.current = false;
     void endSession();
     setPhase("ended");
-    // Auto-navigate to report after a brief completion moment
-    window.setTimeout(() => {
-      navigate(`/report/${id}`, {
+
+    window.setTimeout(async () => {
+      const conversation = historyRef.current;
+      let reportId = id || "latest";
+
+      if (user && plan) {
+        try {
+          reportId = await saveInterviewSession({
+            userId: user.id,
+            plan,
+            conversation,
+            durationSeconds: duration,
+          });
+        } catch (err) {
+          console.error("Failed to persist interview session", err);
+        }
+      }
+
+      navigate(`/report/${reportId}`, {
         state: {
           plan,
-          conversation: historyRef.current,
+          conversation,
           durationSeconds: duration,
+          sessionId: reportId,
         },
         replace: true,
       });
     }, 3000);
-  }, [endSession, navigate, plan, id, duration]);
+  }, [endSession, navigate, plan, id, duration, user]);
 
   const startListening = useCallback(
     (opts?: { forceText?: boolean }) => {
@@ -308,17 +305,34 @@ export default function InterviewSession() {
     stopSpeaking();
     void endSession();
     setPhase("ended");
-    window.setTimeout(() => {
-      navigate(`/report/${id}`, {
+    window.setTimeout(async () => {
+      const conversation = historyRef.current;
+      let reportId = id || "latest";
+
+      if (user && plan) {
+        try {
+          reportId = await saveInterviewSession({
+            userId: user.id,
+            plan,
+            conversation,
+            durationSeconds: duration,
+          });
+        } catch (err) {
+          console.error("Failed to persist interview session", err);
+        }
+      }
+
+      navigate(`/report/${reportId}`, {
         state: {
           plan,
-          conversation: historyRef.current,
+          conversation,
           durationSeconds: duration,
+          sessionId: reportId,
         },
         replace: true,
       });
     }, 3000);
-  }, [confirmEnd, endSession, navigate, plan, id, duration]);
+  }, [confirmEnd, endSession, navigate, plan, id, duration, user]);
 
   /* ── Text mode send ── */
 
@@ -348,7 +362,7 @@ export default function InterviewSession() {
 
   if (!plan) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-background to-muted p-4">
+      <div className="flex min-h-screen items-center justify-center bg-background p-4">
         <EmptyState
           title="No interview data"
           description="Go to setup to prepare your interview plan first."
@@ -365,66 +379,44 @@ export default function InterviewSession() {
   /* ── Idle overlay (start screen) ── */
   if (phase === "idle") {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-background to-muted p-4">
-        <div className="max-w-md w-full space-y-8 text-center">
-          <div className="space-y-4">
-            <div className="flex justify-center">
-              <div className="flex items-center justify-center w-20 h-20 rounded-full bg-primary/10">
-                <MessageSquareText className="h-10 w-10 text-primary" />
-              </div>
-            </div>
-            <h1 className="text-2xl font-bold tracking-tight font-heading">
-              Alex — AI Interviewer
-            </h1>
-            <p className="text-sm text-muted-foreground">
-              Simulating a real interview for{" "}
-              <span className="font-medium text-foreground">
-                {plan.target_role || "your target role"}
-              </span>
-            </p>
+      <div className="fixed inset-0 z-40 flex min-h-screen items-center justify-center overflow-hidden bg-[#111210] p-5 text-[#f2f1ec]">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_42%,rgba(255,255,255,0.075),transparent_34%)]" />
+        <div className="relative w-full max-w-lg text-center">
+          <StageLabel active className="mb-10 text-white/50">
+            Room ready
+          </StageLabel>
+          <div className="mb-7 flex justify-center">
+            <PresenceOrb active size="lg" />
           </div>
-
-          <div className="space-y-3 text-left text-sm text-muted-foreground bg-background rounded-xl border p-5">
-            <div className="flex items-start gap-3">
-              <Mic className="h-4 w-4 text-primary mt-0.5 shrink-0" />
-              <span>
-                You'll need a microphone for this session. Your speech is
-                transcribed in real time.
-              </span>
-            </div>
-            <div className="flex items-start gap-3">
-              <Sparkles className="h-4 w-4 text-primary mt-0.5 shrink-0" />
-              <span>
-                The interviewer adapts to your answers — just speak naturally.
-              </span>
-            </div>
-            <div className="flex items-start gap-3">
-              <CheckCircle2 className="h-4 w-4 text-primary mt-0.5 shrink-0" />
-              <span>
-                Once you finish, you'll get a detailed feedback report.
-              </span>
-            </div>
-          </div>
-
-          <div className="space-y-3">
+          <h1 className="font-heading text-3xl font-medium tracking-tight sm:text-4xl">
+            Alexa is ready to meet you.
+          </h1>
+          <p className="mx-auto mt-4 max-w-sm text-sm leading-6 text-white/45">
+            {plan.target_role || "Your role"} interview · Speak naturally and
+            take your time.
+          </p>
+          <Waveform
+            active={false}
+            className="mx-auto my-10 max-w-xs text-white/45"
+          />
+          <div className="mx-auto max-w-xs space-y-3">
             <Button
               size="lg"
               onClick={begin}
-              className="gap-2 w-full"
+              className="h-12 w-full gap-2 rounded-full bg-[#f2f1ec] text-[#111210] hover:bg-white"
             >
               <Mic className="h-4 w-4" />
-              Begin Interview
+              Join interview
             </Button>
             <button
               type="button"
-              onClick={() => {
-                setTextMode((t) => !t);
-              }}
-              className="block mx-auto text-xs text-muted-foreground underline hover:text-foreground transition-colors cursor-pointer"
+              onClick={() => setTextMode((t) => !t)}
+              className="mx-auto inline-flex items-center gap-2 text-xs text-white/40 transition-colors hover:text-white/75"
             >
+              <Keyboard className="h-3.5 w-3.5" />
               {textMode
-                ? "🎤 Use microphone instead"
-                : "⌨️ Prefer to type your answers?"}
+                ? "Use microphone instead"
+                : "Use text instead"}
             </button>
           </div>
         </div>
@@ -435,29 +427,20 @@ export default function InterviewSession() {
   /* ── Ended state ── */
   if (phase === "ended") {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-background to-muted p-4">
-        <div className="max-w-sm w-full text-center space-y-6">
+      <div className="fixed inset-0 z-40 flex min-h-screen items-center justify-center bg-[#111210] p-4 text-[#f2f1ec]">
+        <div className="w-full max-w-sm space-y-6 text-center">
           <div className="flex justify-center">
-            <div className="flex items-center justify-center w-20 h-20 rounded-full bg-emerald-100">
-              <CheckCircle2 className="h-10 w-10 text-emerald-600" />
+            <div className="flex h-16 w-16 items-center justify-center rounded-full border border-white/10 bg-white/5">
+              <CheckCircle2 className="h-7 w-7 text-white/70" />
             </div>
           </div>
-          <h2 className="text-2xl font-bold tracking-tight font-heading">
-            Interview Complete
+          <h2 className="font-heading text-3xl font-medium tracking-tight">
+            Conversation complete.
           </h2>
-          <p className="text-sm text-muted-foreground">
-            Preparing your feedback report…
+          <p className="text-sm text-white/45">
+            Your interviewer is preparing thoughtful feedback.
           </p>
-          <Loader2 className="h-5 w-5 mx-auto text-primary animate-spin" />
-          <div className="flex gap-3 justify-center pt-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => navigate("/dashboard")}
-            >
-              Back to Dashboard
-            </Button>
-          </div>
+          <Loader2 className="mx-auto h-4 w-4 animate-spin text-white/40" />
         </div>
       </div>
     );
@@ -477,181 +460,148 @@ export default function InterviewSession() {
     ended: ["Interview complete", false],
   } as const;
 
-  const [statusText] = phaseLabel[phase] ?? [
-    "",
-    false,
-  ];
+  const [statusText] = phaseLabel[phase] ?? ["", false];
+  const stageText = lastReply?.stage
+    ? lastReply.stage.replace("_", " ")
+    : "Introduction";
 
   /* ── Main session view ── */
   return (
-    <div className="min-h-screen flex flex-col bg-gradient-to-b from-background via-muted/30 to-muted/50">
-      {/* Top bar */}
-      <header className="sticky top-0 z-30 bg-background/80 backdrop-blur-sm border-b">
-        <div className="max-w-4xl mx-auto flex items-center justify-between px-4 h-14">
-          <div className="flex items-center gap-3">
+    <div className="fixed inset-0 z-40 flex min-h-screen flex-col overflow-hidden bg-[#111210] text-[#f2f1ec]">
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_20%,rgba(255,255,255,0.045),transparent_34%)]" />
+      <header className="relative z-30 border-b border-white/10 bg-[#111210]/85 backdrop-blur-md">
+        <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-7">
+          <div className="flex min-w-0 items-center gap-3">
+            <PresenceOrb
+              active={phase === "speaking" || phase === "thinking"}
+              size="sm"
+            />
+            <div className="min-w-0">
+              <p className="truncate text-sm font-medium text-white/90">Alexa</p>
+              <p className="truncate text-[11px] text-white/35">
+                Interviewer · {statusText}
+              </p>
+            </div>
+          </div>
+
+          <div className="hidden items-center gap-6 sm:flex">
+            <StageLabel active className="capitalize text-white/50">
+              {stageText}
+            </StageLabel>
+            <span className="text-xs tabular-nums text-white/40">
+              {formatDuration(duration)}
+            </span>
+          </div>
+
+          <div className="flex items-center gap-2">
             {confirmEnd ? (
-              <div className="flex items-center gap-2 text-sm">
-                <span className="text-muted-foreground">End interview?</span>
+              <>
                 <Button
                   variant="destructive"
                   size="sm"
                   onClick={handleEnd}
-                  className="h-7 text-xs"
+                  className="h-8 text-xs"
                 >
-                  Yes, end
+                  End now
                 </Button>
                 <Button
                   variant="ghost"
                   size="sm"
                   onClick={() => setConfirmEnd(false)}
-                  className="h-7 text-xs"
+                  className="h-8 text-xs text-white/55 hover:bg-white/10 hover:text-white"
                 >
-                  Keep going
+                  Cancel
                 </Button>
-              </div>
+              </>
             ) : (
-              <button
-                onClick={() => setConfirmEnd(true)}
-                className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
-                aria-label="Exit interview"
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleEnd}
+                className="gap-1.5 text-white/40 hover:bg-white/10 hover:text-white"
+                aria-label="End interview"
               >
-                <ArrowLeft className="h-4 w-4" />
-                <span className="hidden sm:inline">Exit</span>
-              </button>
+                <PhoneOff className="h-4 w-4" />
+                <span>End</span>
+              </Button>
             )}
           </div>
-
-          <div className="flex items-center gap-3 text-sm">
-            <span className="font-medium text-foreground hidden sm:inline">
-              Alex
-            </span>
-            <span className="text-muted-foreground text-xs hidden sm:inline">
-              {plan.target_role || "Interviewer"}
-            </span>
-            <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2.5 py-1 text-xs tabular-nums font-medium text-muted-foreground">
-              {formatDuration(duration)}
-            </span>
-          </div>
-
-          {!confirmEnd && (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={handleEnd}
-              className="gap-1.5 text-muted-foreground hover:text-destructive"
-              aria-label="End interview"
-            >
-              <PhoneOff className="h-4 w-4" />
-              <span className="hidden sm:inline">End</span>
-            </Button>
-          )}
         </div>
       </header>
 
-      {/* Status pill */}
-      <div className="flex justify-center pt-3">
-        <div
-          className={`inline-flex items-center gap-2 rounded-full px-3.5 py-1.5 text-xs font-medium transition-all duration-200 ${
-            phase === "listening" && speechActive
-              ? "bg-emerald-100 text-emerald-700"
-              : phase === "speaking"
-                ? "bg-primary/10 text-primary"
-                : "bg-muted text-muted-foreground"
-          }`}
-          aria-live="polite"
-        >
-          {(phase === "speaking" || phase === "thinking") && (
-            <SpeakingBars
-              active={phase === "speaking"}
-            />
-          )}
-          {phase === "listening" && speechActive && (
-            <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-          )}
-          {statusText}
-        </div>
-      </div>
-
-      {/* Conversation area */}
-      <div className="flex-1 flex flex-col px-4 py-4 max-w-2xl mx-auto w-full">
+      <div className="relative mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col px-5 sm:px-8">
         <div
           ref={scrollRef}
-          className="flex-1 overflow-y-auto space-y-4 scroll-smooth"
+          className="flex-1 space-y-9 overflow-y-auto py-10 scroll-smooth [scrollbar-width:none] sm:py-14"
           role="log"
           aria-live="polite"
           aria-label="Interview transcript"
         >
-          {/* Previous exchanges */}
           {conversation.map((msg, i) => {
             const isAi = msg.role === "assistant";
             return (
               <div
                 key={i}
-                className={`flex gap-3 ${isAi ? "" : "flex-row-reverse"}`}
+                className={`max-w-2xl transition-opacity ${
+                  isAi ? "mr-auto" : "ml-auto w-[88%] sm:w-[78%]"
+                }`}
               >
-                <div
-                  className={`max-w-[80%] rounded-2xl px-4 py-3 ${
-                    isAi
-                      ? "bg-background border border-border rounded-bl-md"
-                      : "bg-primary text-primary-foreground rounded-br-md"
+                <p
+                  className={`mb-2 text-[10px] font-semibold uppercase tracking-[0.18em] ${
+                    isAi ? "text-white/30" : "text-white/20"
                   }`}
                 >
-                  <p className="text-xs font-medium opacity-60 mb-1">
-                    {isAi ? "Interviewer" : "You"}
-                  </p>
-                  <p className="text-sm leading-relaxed whitespace-pre-wrap">
-                    {msg.content}
-                  </p>
-                </div>
+                  {isAi ? "Alexa" : "You"}
+                </p>
+                <p
+                  className={`whitespace-pre-wrap font-heading leading-relaxed ${
+                    isAi
+                      ? "text-xl text-white/90 sm:text-2xl"
+                      : "text-base text-white/55 sm:text-lg"
+                  }`}
+                >
+                  {msg.content}
+                </p>
               </div>
             );
           })}
 
-          {/* Current interviewer message (while speaking) */}
-          {(phase === "speaking" || phase === "thinking") && lastReply && (
-            <div className="flex gap-3">
-              <div className="max-w-[80%] rounded-2xl px-4 py-3 bg-background border border-primary/20 rounded-bl-md">
-                <p className="text-xs font-medium text-primary mb-1">
-                  Interviewer
-                </p>
-                <p className="text-sm leading-relaxed whitespace-pre-wrap">
-                  {lastReply.message}
-                </p>
-                {phase === "thinking" && (
-                  <span className="inline-block ml-1 animate-pulse">
-                    <span className="inline-block w-1.5 h-4 bg-primary/40 rounded-full align-middle" />
-                  </span>
-                )}
+          {phase === "thinking" && (
+            <div className="mr-auto max-w-2xl">
+              <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-white/30">
+                Alexa
+              </p>
+              <div className="flex items-center gap-3 text-white/40">
+                <Waveform active bars={16} className="h-5 justify-start" />
+                <span className="text-xs">Considering your answer</span>
               </div>
             </div>
           )}
 
-          {/* Live caption (candidate speaking) */}
           {phase === "listening" && liveCaption && (
-            <div className="flex gap-3 flex-row-reverse">
-              <div className="max-w-[80%] rounded-2xl px-4 py-3 bg-primary text-primary-foreground rounded-br-md">
-                <p className="text-xs font-medium opacity-60 mb-1">You</p>
-                <p className="text-sm leading-relaxed whitespace-pre-wrap">
-                  {liveCaption}
-                </p>
-              </div>
+            <div className="ml-auto w-[88%] max-w-2xl sm:w-[78%]">
+              <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-white/20">
+                You · Live
+              </p>
+              <p className="whitespace-pre-wrap font-heading text-base leading-relaxed text-white/55 sm:text-lg">
+                {liveCaption}
+              </p>
             </div>
           )}
         </div>
       </div>
 
-      {/* Bottom area — controls + error */}
-      <div className="px-4 pb-6 max-w-2xl mx-auto w-full space-y-3">
-        {/* Error banner */}
+      <div className="relative border-t border-white/10 bg-[#151614] px-4 py-4">
+        <div className="mx-auto w-full max-w-3xl space-y-3">
         {errorBanner && (
-          <div className="flex items-start justify-between gap-3 rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-2.5 text-sm text-destructive">
+          <div className="flex items-start justify-between gap-3 rounded-lg border border-red-400/20 bg-red-400/5 px-4 py-2.5 text-sm text-red-200">
             <span className="text-xs leading-relaxed flex-1">{errorBanner}</span>
             <div className="flex items-center gap-2 shrink-0">
               {canRetryInterviewer && (
                 <button
                   onClick={retryInterviewer}
                   disabled={retrying || phase === "thinking"}
-                  className="inline-flex items-center gap-1.5 rounded-md bg-destructive text-destructive-foreground px-2.5 py-1 text-xs font-medium hover:bg-destructive/90 disabled:opacity-50 cursor-pointer"
+                  className="inline-flex cursor-pointer items-center gap-1.5 rounded-md bg-red-100 px-2.5 py-1 text-xs font-medium text-red-950 hover:bg-white disabled:opacity-50"
                   aria-label="Retry interviewer"
                 >
                   <RefreshCw
@@ -666,7 +616,7 @@ export default function InterviewSession() {
                   setCanRetryInterviewer(false);
                   clearError();
                 }}
-                className="text-xs underline hover:text-foreground cursor-pointer"
+                className="cursor-pointer text-xs text-white/45 underline hover:text-white"
               >
                 Dismiss
               </button>
@@ -674,27 +624,35 @@ export default function InterviewSession() {
           </div>
         )}
 
-        {/* Voice / Text controls */}
         {phase === "listening" && (
-          <div className="flex items-center justify-center gap-3">
+          <div className="flex items-center justify-between gap-4">
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-3">
+                <Waveform
+                  active={speechActive}
+                  className="h-7 justify-start text-white/60"
+                  bars={24}
+                />
+                <span className="hidden text-xs text-white/35 sm:inline">
+                  {speechActive ? "Capturing your answer" : "Listening"}
+                </span>
+              </div>
+            </div>
             <button
               onClick={() => {
                 pauseCapture();
                 setPhase("awaiting");
               }}
-              className="flex items-center justify-center w-14 h-14 rounded-full bg-destructive text-destructive-foreground hover:bg-destructive/90 transition-all active:scale-95 shadow-lg"
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-white/15 bg-white/10 text-white/75 transition-all hover:bg-white/15 active:scale-95"
               aria-label="Stop recording"
             >
               <MicOff className="h-5 w-5" />
             </button>
-            <span className="text-xs text-muted-foreground">
-              Click to pause
-            </span>
           </div>
         )}
 
         {phase === "awaiting" && (
-          <div className="space-y-3">
+          <div>
             {textMode ? (
               <div className="flex gap-2">
                 <input
@@ -708,7 +666,7 @@ export default function InterviewSession() {
                     }
                   }}
                   placeholder="Type your answer…"
-                  className="flex-1 rounded-lg border border-input bg-background px-4 py-2.5 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                  className="flex-1 rounded-full border border-white/10 bg-white/5 px-5 py-2.5 text-sm text-white placeholder:text-white/25 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/30"
                   autoFocus
                   aria-label="Type your answer"
                 />
@@ -716,36 +674,51 @@ export default function InterviewSession() {
                   onClick={sendTyped}
                   disabled={!typedDraft.trim() || busyRef.current}
                   size="icon"
-                  className="shrink-0"
+                  className="shrink-0 rounded-full bg-white text-black hover:bg-white/90"
                   aria-label="Send answer"
                 >
                   <Send className="h-4 w-4" />
                 </Button>
               </div>
             ) : (
-              <div className="flex flex-col items-center gap-3">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <p className="text-sm text-white/65">Your turn</p>
+                  <p className="text-xs text-white/30">Take a moment when you need it.</p>
+                </div>
                 <button
                   onClick={() => startListening()}
-                  className="flex items-center justify-center w-14 h-14 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 transition-all active:scale-95 shadow-lg"
+                  className="flex h-11 w-11 items-center justify-center rounded-full bg-[#f2f1ec] text-[#111210] transition-all hover:bg-white active:scale-95"
                   aria-label="Start speaking"
                 >
                   <Mic className="h-5 w-5" />
                 </button>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-muted-foreground">
-                    Tap to speak
-                  </span>
-                  <button
-                    onClick={() => setTextMode(true)}
-                    className="text-xs text-muted-foreground underline hover:text-foreground cursor-pointer"
-                  >
-                    or type
-                  </button>
-                </div>
+                <button
+                  onClick={() => setTextMode(true)}
+                  className="text-xs text-white/35 underline hover:text-white/70"
+                >
+                  Type instead
+                </button>
               </div>
             )}
           </div>
         )}
+        {(phase === "connecting" || phase === "speaking") && (
+          <div className="flex h-11 items-center justify-between">
+            <div className="flex items-center gap-3">
+              <Waveform
+                active={phase === "speaking"}
+                bars={28}
+                className="h-7 justify-start text-white/60"
+              />
+              <span className="text-xs text-white/35">{statusText}</span>
+            </div>
+            <span className="text-xs tabular-nums text-white/30 sm:hidden">
+              {formatDuration(duration)}
+            </span>
+          </div>
+        )}
+        </div>
       </div>
     </div>
   );

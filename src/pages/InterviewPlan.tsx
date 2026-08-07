@@ -1,51 +1,56 @@
+import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, Link } from "react-router-dom";
-import {
-  Mic,
-  Sparkles,
-  Briefcase,
-  Gauge,
-  UserRound,
-  Lock,
-  ArrowRight,
-  MessageCircle,
-  Flag,
-} from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { EmptyState } from "@/components/common/EmptyState";
+import {
+  PresenceOrb,
+  StageLabel,
+  Waveform,
+} from "@/components/studio/StudioPrimitives";
 import type { InterviewPlanData } from "@/lib/interview";
 
 const steps = [
-  {
-    icon: UserRound,
-    title: "Meet your interviewer",
-    desc: "A warm greeting and introduction to settle in.",
-  },
-  {
-    icon: MessageCircle,
-    title: "Quick warm-up chat",
-    desc: "A light conversation about you and your background.",
-  },
-  {
-    icon: Briefcase,
-    title: "Role-specific questions",
-    desc: "Questions tailored to your profile and the target role.",
-  },
-  {
-    icon: Flag,
-    title: "Wrap-up & report",
-    desc: "The interviewer closes the session and your feedback report is prepared.",
-  },
+  "Reviewing your profile",
+  "Reading role context",
+  "Preparing your interviewer",
+  "Opening the room",
 ];
 
 export default function InterviewPlan() {
   const location = useLocation();
   const navigate = useNavigate();
   const plan = location.state?.plan as InterviewPlanData | undefined;
+  const [activeStep, setActiveStep] = useState(0);
+  const navigatedRef = useRef(false);
+
+  useEffect(() => {
+    if (!plan) return;
+
+    const interval = window.setInterval(() => {
+      setActiveStep((current) => Math.min(current + 1, steps.length - 1));
+    }, 1050);
+    const timeout = window.setTimeout(() => {
+      if (navigatedRef.current) return;
+      navigatedRef.current = true;
+      navigate("/session/1", { state: { plan } });
+    }, 4700);
+
+    return () => {
+      window.clearInterval(interval);
+      window.clearTimeout(timeout);
+    };
+  }, [navigate, plan]);
+
+  const enterRoom = () => {
+    if (navigatedRef.current) return;
+    navigatedRef.current = true;
+    navigate("/session/1", { state: { plan } });
+  };
 
   if (!plan) {
     return (
-      <div className="max-w-2xl mx-auto pt-12">
+      <div className="mx-auto max-w-2xl pt-12">
         <EmptyState
           title="No interview plan found"
           description="Generate an interview plan first by uploading your resume and job description in the setup page."
@@ -60,99 +65,83 @@ export default function InterviewPlan() {
   }
 
   return (
-    <div className="max-w-2xl mx-auto space-y-8">
-      {/* Header */}
-      <div className="text-center space-y-3">
-        <div className="flex justify-center">
-          <div className="flex items-center justify-center w-16 h-16 rounded-2xl bg-primary/10">
-            <Mic className="h-8 w-8 text-primary" />
-          </div>
+    <div className="fixed inset-0 z-40 overflow-hidden bg-[#111210] text-[#f2f1ec]">
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_38%,rgba(255,255,255,0.07),transparent_36%)]" />
+      <div className="relative mx-auto flex min-h-screen max-w-5xl flex-col px-5 py-6 sm:px-10 sm:py-8">
+        <div className="flex items-center justify-between">
+          <button
+            type="button"
+            onClick={() => navigate("/setup")}
+            className="inline-flex items-center gap-2 text-xs font-medium text-white/45 transition-colors hover:text-white/80"
+          >
+            <ArrowLeft className="h-3.5 w-3.5" />
+            Back
+          </button>
+          <StageLabel active className="text-white/60">
+            Studio preparation
+          </StageLabel>
         </div>
-        <h1 className="text-3xl font-bold tracking-tight font-heading">
-          Your interview is ready
-        </h1>
-        <p className="text-muted-foreground max-w-md mx-auto">
-          Your personalized interview plan is set. Let's get you into the
-          interview room.
-        </p>
-      </div>
 
-      {/* Meta chips */}
-      <div className="flex flex-wrap items-center justify-center gap-2">
-        {plan.target_role && (
-          <span className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary">
-            <Briefcase className="h-3.5 w-3.5" />
-            {plan.target_role}
-          </span>
-        )}
-        {plan.target_seniority && (
-          <span className="inline-flex items-center gap-1.5 rounded-full bg-muted px-3 py-1.5 text-xs font-medium text-muted-foreground">
-            <Gauge className="h-3.5 w-3.5" />
-            {plan.target_seniority}
-          </span>
-        )}
-        {plan.overall_difficulty && (
-          <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-100 text-amber-700 px-3 py-1.5 text-xs font-medium">
-            <Sparkles className="h-3.5 w-3.5" />
-            {plan.overall_difficulty}
-          </span>
-        )}
-      </div>
+        <main className="flex flex-1 items-center justify-center py-12">
+          <div className="w-full max-w-xl text-center">
+            <div className="mb-8 flex justify-center">
+              <PresenceOrb active size="lg" className="text-white" />
+            </div>
+            <p className="mb-3 text-[11px] font-semibold uppercase tracking-[0.22em] text-white/35">
+              Your private interview room
+            </p>
+            <h1 className="font-heading text-3xl font-medium tracking-tight sm:text-5xl">
+              Getting the room ready.
+            </h1>
+            <p className="mx-auto mt-4 max-w-md text-sm leading-6 text-white/45">
+              Settle in. Your interviewer will join you in a moment.
+            </p>
 
-      {/* What happens now */}
-      <Card className="border-primary/10">
-        <CardContent className="p-6 space-y-5">
-          <h2 className="text-sm font-semibold text-foreground uppercase tracking-wider">
-            Here's what to expect
-          </h2>
-          <div className="space-y-4">
-            {steps.map((step, i) => (
-              <div key={i} className="flex items-start gap-4">
-                <div className="flex items-center justify-center w-9 h-9 rounded-full bg-primary/10 shrink-0">
-                  <step.icon className="h-4 w-4 text-primary" />
-                </div>
-                <div className="min-w-0">
-                  <p className="text-sm font-medium">{step.title}</p>
-                  <p className="text-xs text-muted-foreground mt-0.5">
-                    {step.desc}
-                  </p>
-                </div>
-              </div>
-            ))}
+            <div className="mx-auto mt-12 max-w-sm border-y border-white/10 py-2 text-left">
+              {steps.map((step, index) => {
+                const complete = index < activeStep;
+                const active = index === activeStep;
+                return (
+                  <div
+                    key={step}
+                    className={`flex h-11 items-center justify-between transition-all duration-500 ${
+                      index > activeStep ? "text-white/20" : "text-white/75"
+                    }`}
+                  >
+                    <span className="text-sm">{step}</span>
+                    {complete ? (
+                      <Check className="h-4 w-4 text-white/45" />
+                    ) : active ? (
+                      <Loader2 className="h-4 w-4 animate-spin text-white/55" />
+                    ) : (
+                      <span className="h-1 w-1 rounded-full bg-white/20" />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            <Waveform
+              active
+              bars={36}
+              className="mx-auto mt-8 h-6 max-w-xs text-white/35"
+            />
           </div>
-        </CardContent>
-      </Card>
+        </main>
 
-      {/* Privacy note */}
-      <div className="flex items-center justify-center gap-2 text-xs text-muted-foreground">
-        <Lock className="h-3 w-3" />
-        <span>
-          Your interview plan stays private — it guides your interviewer behind
-          the scenes, so you can focus on a natural conversation.
-        </span>
-      </div>
-
-      {/* CTAs */}
-      <div className="flex flex-col sm:flex-row items-center gap-3 justify-center">
-        <Button
-          size="lg"
-          onClick={() =>
-            navigate("/session/1", { state: { plan } })
-          }
-          className="gap-2 w-full sm:w-auto"
-        >
-          <Mic className="h-4 w-4" />
-          Enter Interview Room
-        </Button>
-        <Button
-          variant="outline"
-          size="lg"
-          onClick={() => navigate("/setup")}
-          className="gap-2 w-full sm:w-auto"
-        >
-          <ArrowRight className="h-4 w-4" />
-          Start Over
-        </Button>
+        <div className="flex flex-col items-center justify-between gap-4 border-t border-white/10 pt-5 sm:flex-row">
+          <p className="text-xs text-white/30">
+            You’ll enter automatically when the room is ready.
+          </p>
+          <button
+            type="button"
+            onClick={enterRoom}
+            className="inline-flex items-center gap-2 text-xs font-medium text-white/55 transition-colors hover:text-white"
+          >
+            Enter now
+            <ArrowRight className="h-3.5 w-3.5" />
+          </button>
+        </div>
       </div>
     </div>
   );

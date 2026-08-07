@@ -1,108 +1,98 @@
-import { useState, useRef, type ChangeEvent } from "react";
+import { useState, useRef, useEffect, type ChangeEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Upload,
-  Send,
   Link,
   FileText,
   CheckCircle2,
   Loader2,
   AlertCircle,
-  Briefcase,
-  GraduationCap,
-  Star,
-  Building2,
-  FolderGit2,
-  User,
-  Sparkles,
-  ListChecks,
-  TrendingUp,
-  Wand2,
-  Globe,
-  Cpu,
-  BookOpen,
+  ChevronLeft,
+  ChevronRight,
+  DoorOpen,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardHeader,
-  CardTitle,
-  CardDescription,
-  CardContent,
-} from "@/components/ui/card";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/contexts/AuthContext";
+import type { SetupPayload, ParsedResumeSummary } from "@/lib/prepareInterview";
+import {
+  listUserResumes,
+  toParsedResumeSummary,
+  type SavedResume,
+} from "@/lib/resumes";
 
-interface ParsedResume {
-  id: string;
-  parsed_name: string;
-  parsed_years_experience: string;
-  parsed_skills: string[];
-  parsed_companies: string[];
-  parsed_projects: string[];
-  parsed_education: string[];
-}
-
-interface ParsedJobDescription {
-  role: string;
-  seniority: string;
-  required_skills: string[];
-  nice_to_have_skills: string[];
-  responsibilities: string[];
-}
-
-type UploadStatus = "idle" | "uploading" | "parsing" | "success" | "error";
-type JdStatus = "idle" | "analyzing" | "success" | "error";
-type UrlStatus = "idle" | "importing" | "success" | "error";
-
-interface JobUrlResult {
-  jobDescription: string;
-  companyName: string;
-  companyOverview: string;
-  techStack: string[];
-  parsed: ParsedJobDescription;
-}
+type UploadStatus = "idle" | "uploading" | "ready" | "error";
 
 export default function InterviewSetup() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [currentStep, setCurrentStep] = useState(0);
 
   const [jobUrl, setJobUrl] = useState("");
   const [jobDescription, setJobDescription] = useState("");
 
-  // Resume state
   const [uploadStatus, setUploadStatus] = useState<UploadStatus>("idle");
   const [uploadError, setUploadError] = useState("");
-  const [parsedResume, setParsedResume] = useState<ParsedResume | null>(null);
   const [fileName, setFileName] = useState("");
+  const [resumeFilePath, setResumeFilePath] = useState("");
+  const [parsedResume, setParsedResume] = useState<ParsedResumeSummary | null>(
+    null,
+  );
+  const [savedResumes, setSavedResumes] = useState<SavedResume[]>([]);
+  const [resumesLoading, setResumesLoading] = useState(false);
 
-  // JD analysis state
-  const [jdStatus, setJdStatus] = useState<JdStatus>("idle");
-  const [jdError, setJdError] = useState("");
-  const [parsedJd, setParsedJd] = useState<ParsedJobDescription | null>(null);
+  useEffect(() => {
+    if (!user) {
+      setSavedResumes([]);
+      return;
+    }
+    let cancelled = false;
+    setResumesLoading(true);
+    listUserResumes(user.id)
+      .then((rows) => {
+        if (!cancelled) setSavedResumes(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setSavedResumes([]);
+      })
+      .finally(() => {
+        if (!cancelled) setResumesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
 
-  // Job URL import state
-  const [urlStatus, setUrlStatus] = useState<UrlStatus>("idle");
-  const [urlError, setUrlError] = useState("");
-  const [urlResult, setUrlResult] = useState<JobUrlResult | null>(null);
+  useEffect(() => {
+    if (window.location.hash === "#resume") {
+      setCurrentStep(0);
+    }
+  }, []);
 
-  // Plan generation state
-  const [planStatus, setPlanStatus] = useState<"idle" | "generating" | "error">("idle");
-  const [planError, setPlanError] = useState("");
+  const hasContext =
+    Boolean(resumeFilePath) ||
+    Boolean(jobUrl.trim()) ||
+    Boolean(jobDescription.trim());
+
+  const selectSavedResume = (resume: SavedResume) => {
+    setResumeFilePath(resume.file_path);
+    setFileName(resume.file_name || "resume.pdf");
+    setParsedResume(toParsedResumeSummary(resume));
+    setUploadStatus("ready");
+    setUploadError("");
+  };
 
   const handleFileSelect = async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // Validate file type
     if (file.type !== "application/pdf") {
       setUploadError("Only PDF files are accepted.");
       setUploadStatus("error");
       return;
     }
 
-    // Validate file size (5MB)
     if (file.size > 5 * 1024 * 1024) {
       setUploadError("File is too large. Maximum size is 5MB.");
       setUploadStatus("error");
@@ -116,37 +106,23 @@ export default function InterviewSetup() {
     try {
       if (!user) throw new Error("You must be signed in to upload a resume.");
 
-      // Upload to Supabase Storage
       const filePath = `${user.id}/${Date.now()}-${file.name}`;
-      const { error: uploadError } = await supabase.storage
-        .from("resumes")
-        .upload(filePath, file, {
-          cacheControl: "3600",
-          upsert: false,
-        });
-
-      if (uploadError) throw uploadError;
-
-      // Call the Edge Function to parse
-      setUploadStatus("parsing");
-
-      const { data, error } = await supabase.functions.invoke("parse-resume", {
-        body: { filePath, fileName: file.name },
+      const { error } = await supabase.storage.from("resumes").upload(filePath, file, {
+        cacheControl: "3600",
+        upsert: false,
       });
 
-      if (error) {
-        throw new Error(
-          data?.details || data?.error || error.message || "Failed to parse resume",
-        );
-      }
+      if (error) throw error;
 
-      setParsedResume(data.resume);
-      setUploadStatus("success");
+      setResumeFilePath(filePath);
+      setParsedResume(null);
+      setUploadStatus("ready");
     } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "Something went wrong.";
+      const message = err instanceof Error ? err.message : "Something went wrong.";
       setUploadError(message);
       setUploadStatus("error");
+      setResumeFilePath("");
+      setParsedResume(null);
     }
   };
 
@@ -171,717 +147,410 @@ export default function InterviewSetup() {
   const resetUpload = () => {
     setUploadStatus("idle");
     setUploadError("");
-    setParsedResume(null);
     setFileName("");
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
-    }
+    setResumeFilePath("");
+    setParsedResume(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
-  const handleAnalyzeJobDescription = async () => {
-    const text = jobDescription.trim();
-    if (!text) return;
-
-    setJdStatus("analyzing");
-    setJdError("");
-
-    try {
-      if (!user) throw new Error("You must be signed in to analyze a job description.");
-
-      const { data, error } = await supabase.functions.invoke(
-        "parse-job-description",
-        { body: { rawText: text } },
-      );
-
-      if (error) {
-        throw new Error(
-          data?.details ||
-            data?.error ||
-            error.message ||
-            "Failed to analyze job description",
-        );
-      }
-
-      setParsedJd(data.parsed);
-      setJdStatus("success");
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "Something went wrong.";
-      setJdError(message);
-      setJdStatus("error");
-    }
-  };
-
-  const resetJdAnalysis = () => {
-    setJdStatus("idle");
-    setJdError("");
-    setParsedJd(null);
-  };
-
-  const handleImportFromUrl = async () => {
-    const url = jobUrl.trim();
-    if (!url) return;
-
-    setUrlStatus("importing");
-    setUrlError("");
-
-    try {
-      if (!user) throw new Error("You must be signed in to import a job URL.");
-
-      const { data: result, error } = await supabase.functions.invoke(
-        "fetch-job-url",
-        { body: { url } },
-      );
-
-      if (error) {
-        throw new Error(
-          result?.details ||
-            result?.error ||
-            error.message ||
-            "Failed to import job URL",
-        );
-      }
-
-      const data = result as JobUrlResult;
-
-      // Populate the job description textarea
-      setJobDescription(data.jobDescription || "");
-
-      // Store the full URL result for display
-      setUrlResult(data);
-
-      // Auto-populate JD analysis if the parsed fields are available
-      if (data.parsed && (data.parsed.role || data.parsed.required_skills.length > 0)) {
-        setParsedJd(data.parsed);
-        setJdStatus("success");
-      }
-
-      setUrlStatus("success");
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "Something went wrong.";
-      setUrlError(message);
-      setUrlStatus("error");
-    }
-  };
-
-  const resetUrlImport = () => {
-    setUrlStatus("idle");
-    setUrlError("");
-    setUrlResult(null);
-  };
-
-  const handleGeneratePlan = async () => {
-    setPlanStatus("generating");
-    setPlanError("");
-
-    try {
-      if (!user) throw new Error("You must be signed in to generate an interview plan.");
-
-      const resumeData = parsedResume
-        ? {
-            parsed_name: parsedResume.parsed_name,
-            parsed_years_experience: parsedResume.parsed_years_experience,
-            parsed_skills: parsedResume.parsed_skills,
-            parsed_companies: parsedResume.parsed_companies,
-            parsed_projects: parsedResume.parsed_projects,
-            parsed_education: parsedResume.parsed_education,
-          }
-        : undefined;
-
-      const jobData = parsedJd
-        ? {
-            role: parsedJd.role,
-            seniority: parsedJd.seniority,
-            required_skills: parsedJd.required_skills,
-            nice_to_have_skills: parsedJd.nice_to_have_skills,
-            responsibilities: parsedJd.responsibilities,
-          }
-        : undefined;
-
-      const { data, error } = await supabase.functions.invoke(
-        "generate-interview-plan",
-        { body: { resumeData, jobData } },
-      );
-
-      if (error) {
-        throw new Error(
-          data?.details ||
-            data?.error ||
-            error.message ||
-            "Failed to generate interview plan",
-        );
-      }
-
-      navigate("/plan", { state: { plan: data, fromSetup: true } });
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "Something went wrong.";
-      setPlanError(message);
-      setPlanStatus("error");
-    }
-  };
-
-  const handleStart = () => {
-    // Build a minimal plan so the interviewer can improvise questions from
-    // the resume + job description context without a full generated plan.
-    const fallbackPlan = {
-      candidate_name: parsedResume?.parsed_name || "",
-      target_role: parsedJd?.role || "",
-      target_seniority: parsedJd?.seniority || "Mid Level",
-      overall_difficulty: "Medium",
-      sections: {
-        recruiter_questions: {
-          title: "Recruiter / Screening Questions",
-          description: "",
-          questions: [],
-        },
-        behavioral_questions: {
-          title: "Behavioral Questions",
-          description: "",
-          questions: [],
-        },
-        technical_questions: {
-          title: "Technical Questions",
-          description: "",
-          questions: [],
-        },
-        follow_up_questions: {
-          title: "Follow-Up Questions",
-          description: "",
-          questions: [],
-        },
-      },
-      preparation_tips: [],
+  const handleEnterRoom = () => {
+    if (!hasContext) return;
+    const payload: SetupPayload = {
+      resumeFilePath: resumeFilePath || undefined,
+      resumeFileName: fileName || undefined,
+      parsedResume: parsedResume || undefined,
+      jobUrl: jobUrl.trim() || undefined,
+      jobDescription: jobDescription.trim() || undefined,
     };
-    navigate("/session/1", { state: { plan: fallbackPlan } });
+    navigate("/preparing", { state: payload });
   };
+
+  const steps = ["Resume", "Target role", "Interview settings", "Ready"];
+  const canMoveForward =
+    currentStep === 0 ? uploadStatus !== "uploading" : true;
+
+  const rolePreview =
+    jobUrl.trim() ||
+    (jobDescription.trim()
+      ? jobDescription.trim().slice(0, 80) + (jobDescription.trim().length > 80 ? "…" : "")
+      : "");
 
   return (
-    <div className="max-w-2xl mx-auto space-y-8">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Setup Interview</h1>
-        <p className="text-muted-foreground mt-1">
-          Configure your mock interview and start practicing.
+    <div className="mx-auto max-w-5xl pb-16">
+      <header className="mb-10 max-w-2xl">
+        <p className="mb-3 text-xs font-semibold uppercase tracking-[0.2em] text-primary">
+          Preparation room
         </p>
-      </div>
+        <h1 className="font-display text-4xl leading-tight tracking-tight sm:text-5xl">
+          Set the context. Enter with purpose.
+        </h1>
+        <p className="mt-4 max-w-xl text-base leading-7 text-muted-foreground">
+          Gather what your interviewer needs. When you enter the room, we&apos;ll
+          prepare everything under the hood—then you connect and begin.
+        </p>
+      </header>
 
-      {/* Resume Upload */}
-      <Card>
-        <CardHeader>
-          <CardTitle>
-            Resume
-            {uploadStatus === "success" && (
-              <span className="ml-2 inline-flex items-center gap-1 text-sm font-normal text-emerald-600">
-                <CheckCircle2 className="h-4 w-4" />
-                Parsed
-              </span>
+      <div className="grid gap-8 lg:grid-cols-[220px_minmax(0,1fr)] lg:gap-14">
+        <nav aria-label="Preparation progress">
+          <ol className="grid grid-cols-4 border-y border-border lg:block lg:border-y-0 lg:border-l">
+            {steps.map((step, index) => {
+              const isActive = index === currentStep;
+              const isComplete = index < currentStep;
+              return (
+                <li key={step}>
+                  <button
+                    type="button"
+                    onClick={() => setCurrentStep(index)}
+                    className={`group flex w-full min-w-0 items-center gap-3 border-primary py-4 text-left transition-colors lg:-ml-px lg:border-l-2 lg:px-5 ${
+                      isActive ? "lg:border-primary" : "lg:border-transparent"
+                    }`}
+                    aria-current={isActive ? "step" : undefined}
+                  >
+                    <span
+                      className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full border text-xs font-semibold ${
+                        isActive
+                          ? "border-primary bg-primary text-primary-foreground"
+                          : isComplete
+                            ? "border-primary/30 bg-accent text-accent-foreground"
+                            : "border-border text-muted-foreground"
+                      }`}
+                    >
+                      {isComplete ? <CheckCircle2 className="h-3.5 w-3.5" /> : index + 1}
+                    </span>
+                    <span
+                      className={`hidden text-sm lg:block ${
+                        isActive ? "font-semibold text-foreground" : "text-muted-foreground"
+                      }`}
+                    >
+                      {step}
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ol>
+
+          <div className="mt-6 hidden space-y-5 pl-5 lg:block">
+            {currentStep > 0 && (
+              <button type="button" onClick={() => setCurrentStep(0)} className="block w-full text-left">
+                <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Resume
+                </span>
+                <span className="mt-1 block truncate text-sm font-medium">
+                  {fileName || "Skipped for now"}
+                </span>
+              </button>
             )}
-          </CardTitle>
-          <CardDescription>
-            Upload your resume so the AI can tailor questions to your
-            experience.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {uploadStatus === "idle" || uploadStatus === "error" ? (
-            <div
-              onDrop={handleDrop}
-              onDragOver={handleDragOver}
-              onClick={() => fileInputRef.current?.click()}
-              className="border-2 border-dashed border-border rounded-lg p-12 text-center hover:border-muted-foreground/50 transition-colors cursor-pointer"
-            >
-              <Upload className="h-8 w-8 mx-auto text-muted-foreground mb-4" />
-              <p className="text-sm font-medium">
-                Drop your resume here or click to browse
+            {currentStep > 1 && (
+              <button type="button" onClick={() => setCurrentStep(1)} className="block w-full text-left">
+                <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Target
+                </span>
+                <span className="mt-1 block truncate text-sm font-medium">
+                  {rolePreview || "Open context"}
+                </span>
+              </button>
+            )}
+          </div>
+        </nav>
+
+        <main className="min-w-0">
+          <div className="hairline studio-shadow overflow-hidden rounded-xl bg-card">
+            <div className="border-b border-border px-6 py-6 sm:px-9 sm:py-8">
+              <p className="text-xs font-medium text-muted-foreground">
+                Step {currentStep + 1} of {steps.length}
               </p>
-              <p className="text-xs text-muted-foreground mt-1">
-                PDF only, up to 5MB
+              <h2 className="font-display mt-2 text-3xl tracking-tight">
+                {currentStep === 0 && "Bring your experience into the room"}
+                {currentStep === 1 && "Define the conversation ahead"}
+                {currentStep === 2 && "Review what travels with you"}
+                {currentStep === 3 && "Your preparation room is ready"}
+              </h2>
+              <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
+                {currentStep === 0 &&
+                  "A resume gives your interviewer the detail needed to ask grounded, relevant questions."}
+                {currentStep === 1 &&
+                  "Share a posting URL or paste the description. We'll fetch and analyze it when you enter."}
+                {currentStep === 2 &&
+                  "Confirm the context. Nothing is locked—you can step back and adjust anytime."}
+                {currentStep === 3 &&
+                  "When you enter, we'll parse your resume, study the role, and build the interview plan."}
               </p>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="application/pdf"
-                className="hidden"
-                onChange={handleFileSelect}
-              />
-              {uploadError && (
-                <div className="mt-4 flex items-center justify-center gap-2 text-sm text-destructive">
-                  <AlertCircle className="h-4 w-4" />
-                  {uploadError}
+            </div>
+
+            <div className="min-h-[380px] px-6 py-7 sm:px-9 sm:py-9">
+              {currentStep === 0 && (
+                <div id="resume" className="space-y-6 animate-fade-up">
+                  {(resumesLoading || savedResumes.length > 0) &&
+                    (uploadStatus === "idle" || uploadStatus === "error") && (
+                      <section className="space-y-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="text-sm font-semibold">Saved resumes</p>
+                          {resumesLoading && (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                          )}
+                        </div>
+                        <ul className="space-y-2">
+                          {savedResumes.map((resume) => (
+                            <li key={resume.id}>
+                              <button
+                                type="button"
+                                onClick={() => selectSavedResume(resume)}
+                                className="flex w-full items-center gap-3 rounded-xl border border-border bg-background/60 px-4 py-3 text-left transition-colors hover:border-primary/40 hover:bg-accent/30"
+                              >
+                                <FileText className="h-4 w-4 shrink-0 text-primary" />
+                                <span className="min-w-0 flex-1">
+                                  <span className="block truncate text-sm font-medium">
+                                    {resume.parsed_name || resume.file_name}
+                                  </span>
+                                  <span className="block truncate text-xs text-muted-foreground">
+                                    {resume.file_name}
+                                    {resume.parsed_years_experience
+                                      ? ` · ${resume.parsed_years_experience}`
+                                      : ""}
+                                  </span>
+                                </span>
+                                <span className="shrink-0 text-xs font-medium text-primary">
+                                  Use
+                                </span>
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                        <div className="flex items-center gap-4 pt-1">
+                          <span className="h-px flex-1 bg-border" />
+                          <span className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
+                            or upload new
+                          </span>
+                          <span className="h-px flex-1 bg-border" />
+                        </div>
+                      </section>
+                    )}
+
+                  {uploadStatus === "idle" || uploadStatus === "error" ? (
+                    <div
+                      onDrop={handleDrop}
+                      onDragOver={handleDragOver}
+                      onClick={() => fileInputRef.current?.click()}
+                      className="group cursor-pointer rounded-xl border border-dashed border-input bg-background/50 px-6 py-14 text-center transition-colors hover:border-primary/50 hover:bg-accent/30"
+                    >
+                      <span className="mx-auto flex h-11 w-11 items-center justify-center rounded-full border border-border bg-card">
+                        <Upload className="h-5 w-5 text-primary" />
+                      </span>
+                      <p className="mt-5 text-sm font-semibold">
+                        Drop your resume here or choose a file
+                      </p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        PDF only · Maximum 5MB
+                      </p>
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept="application/pdf"
+                        className="hidden"
+                        onChange={handleFileSelect}
+                      />
+                      {uploadError && (
+                        <div className="mt-5 flex items-center justify-center gap-2 text-sm text-destructive">
+                          <AlertCircle className="h-4 w-4" />
+                          {uploadError}
+                        </div>
+                      )}
+                    </div>
+                  ) : uploadStatus === "uploading" ? (
+                    <div className="rounded-xl border border-border bg-muted/30 px-6 py-14 text-center">
+                      <Loader2 className="mx-auto h-7 w-7 animate-spin text-primary" />
+                      <p className="mt-5 text-sm font-semibold">Bringing your resume in…</p>
+                      <p className="mt-1 truncate text-xs text-muted-foreground">{fileName}</p>
+                    </div>
+                  ) : (
+                    <div className="flex items-center justify-between gap-4 rounded-xl border border-border bg-muted/25 px-5 py-5">
+                      <div className="flex min-w-0 items-center gap-3">
+                        <FileText className="h-5 w-5 shrink-0 text-primary" />
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold">
+                            {parsedResume?.parsed_name || fileName}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {parsedResume
+                              ? "Saved resume selected — ready for the room"
+                              : "Ready — we'll read it when you enter the room"}
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={resetUpload}
+                        className="shrink-0 text-xs font-medium text-primary hover:underline"
+                      >
+                        Replace
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
-            </div>
-          ) : uploadStatus === "uploading" || uploadStatus === "parsing" ? (
-            <div className="border-2 border-border rounded-lg p-12 text-center">
-              <Loader2 className="h-8 w-8 mx-auto text-primary mb-4 animate-spin" />
-              <p className="text-sm font-medium">
-                {uploadStatus === "uploading"
-                  ? "Uploading resume..."
-                  : "Parsing resume with AI..."}
-              </p>
-              <p className="text-xs text-muted-foreground mt-1">{fileName}</p>
-            </div>
-          ) : uploadStatus === "success" && parsedResume ? (
-            <div className="space-y-4">
-              {/* File info bar */}
-              <div className="flex items-center justify-between rounded-lg border bg-muted/40 px-4 py-3">
-                <div className="flex items-center gap-3">
-                  <FileText className="h-5 w-5 text-primary" />
-                  <div>
-                    <p className="text-sm font-medium">{fileName}</p>
-                    <p className="text-xs text-muted-foreground">
-                      Parsed successfully
+
+              {currentStep === 1 && (
+                <div className="space-y-8 animate-fade-up">
+                  <section>
+                    <label htmlFor="job-url" className="text-sm font-semibold">
+                      Job posting URL
+                    </label>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Optional. We&apos;ll fetch the posting during preparation.
                     </p>
+                    <div className="relative mt-3">
+                      <Link className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                      <input
+                        id="job-url"
+                        type="url"
+                        value={jobUrl}
+                        onChange={(e) => setJobUrl(e.target.value)}
+                        placeholder="https://company.com/jobs/role"
+                        className="w-full rounded-lg border border-input bg-background py-2.5 pl-9 pr-3 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      />
+                    </div>
+                  </section>
+
+                  <div className="flex items-center gap-4">
+                    <span className="h-px flex-1 bg-border" />
+                    <span className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
+                      or paste manually
+                    </span>
+                    <span className="h-px flex-1 bg-border" />
                   </div>
+
+                  <section>
+                    <label htmlFor="job-description" className="text-sm font-semibold">
+                      Job description
+                    </label>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Paste responsibilities and requirements if you don&apos;t have a URL.
+                    </p>
+                    <textarea
+                      id="job-description"
+                      value={jobDescription}
+                      onChange={(e) => setJobDescription(e.target.value)}
+                      className="mt-3 min-h-[150px] w-full resize-y rounded-lg border border-input bg-background px-3.5 py-3 text-sm leading-6 placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      placeholder="Paste the responsibilities, requirements, and role details here..."
+                    />
+                  </section>
                 </div>
-                <button
-                  onClick={resetUpload}
-                  className="text-xs text-muted-foreground hover:text-foreground underline"
-                >
-                  Upload different
-                </button>
-              </div>
+              )}
 
-              {/* Parsed data summary */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {parsedResume.parsed_name && (
-                  <div className="flex items-start gap-2 rounded-lg border bg-background p-3">
-                    <User className="h-4 w-4 text-primary mt-0.5 shrink-0" />
-                    <div className="min-w-0">
-                      <p className="text-xs text-muted-foreground">Name</p>
-                      <p className="text-sm font-medium truncate">
-                        {parsedResume.parsed_name}
-                      </p>
-                    </div>
-                  </div>
-                )}
-                {parsedResume.parsed_years_experience && (
-                  <div className="flex items-start gap-2 rounded-lg border bg-background p-3">
-                    <Briefcase className="h-4 w-4 text-primary mt-0.5 shrink-0" />
-                    <div className="min-w-0">
-                      <p className="text-xs text-muted-foreground">Experience</p>
-                      <p className="text-sm font-medium truncate">
-                        {parsedResume.parsed_years_experience}
-                      </p>
-                    </div>
-                  </div>
-                )}
-                {parsedResume.parsed_skills &&
-                  parsedResume.parsed_skills.length > 0 && (
-                    <div className="flex items-start gap-2 rounded-lg border bg-background p-3 sm:col-span-2">
-                      <Star className="h-4 w-4 text-primary mt-0.5 shrink-0" />
-                      <div className="min-w-0 flex-1">
-                        <p className="text-xs text-muted-foreground mb-1">
-                          Skills
-                        </p>
-                        <div className="flex flex-wrap gap-1.5">
-                          {parsedResume.parsed_skills.map((skill, i) => (
-                            <span
-                              key={i}
-                              className="inline-block rounded-full bg-primary/10 px-2.5 py-0.5 text-xs font-medium text-primary"
-                            >
-                              {skill}
-                            </span>
-                          ))}
-                        </div>
+              {currentStep === 2 && (
+                <div className="space-y-7 animate-fade-up">
+                  <div className="rounded-xl border border-border bg-muted/25 p-5 sm:p-6">
+                    <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                      Context in the room
+                    </p>
+                    <dl className="mt-5 grid gap-5 sm:grid-cols-2">
+                      <div>
+                        <dt className="text-xs text-muted-foreground">Resume</dt>
+                        <dd className="mt-1 text-sm font-medium">
+                          {fileName || "Not provided"}
+                        </dd>
                       </div>
-                    </div>
-                  )}
-                {parsedResume.parsed_companies &&
-                  parsedResume.parsed_companies.length > 0 && (
-                    <div className="flex items-start gap-2 rounded-lg border bg-background p-3">
-                      <Building2 className="h-4 w-4 text-primary mt-0.5 shrink-0" />
-                      <div className="min-w-0">
-                        <p className="text-xs text-muted-foreground">
-                          Companies
-                        </p>
-                        <ul className="text-sm">
-                          {parsedResume.parsed_companies.map((c, i) => (
-                            <li key={i} className="truncate">
-                              {c}
-                            </li>
-                          ))}
-                        </ul>
+                      <div>
+                        <dt className="text-xs text-muted-foreground">Target role</dt>
+                        <dd className="mt-1 text-sm font-medium">
+                          {jobUrl.trim()
+                            ? "Job URL provided"
+                            : jobDescription.trim()
+                              ? "Description provided"
+                              : "Not provided"}
+                        </dd>
                       </div>
-                    </div>
-                  )}
-                {parsedResume.parsed_education &&
-                  parsedResume.parsed_education.length > 0 && (
-                    <div className="flex items-start gap-2 rounded-lg border bg-background p-3">
-                      <GraduationCap className="h-4 w-4 text-primary mt-0.5 shrink-0" />
-                      <div className="min-w-0">
-                        <p className="text-xs text-muted-foreground">
-                          Education
-                        </p>
-                        <ul className="text-sm">
-                          {parsedResume.parsed_education.map((e, i) => (
-                            <li key={i} className="truncate">
-                              {e}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    </div>
-                  )}
-                {parsedResume.parsed_projects &&
-                  parsedResume.parsed_projects.length > 0 && (
-                    <div className="flex items-start gap-2 rounded-lg border bg-background p-3 sm:col-span-2">
-                      <FolderGit2 className="h-4 w-4 text-primary mt-0.5 shrink-0" />
-                      <div className="min-w-0">
-                        <p className="text-xs text-muted-foreground">
-                          Projects
-                        </p>
-                        <ul className="text-sm list-disc list-inside">
-                          {parsedResume.parsed_projects.map((p, i) => (
-                            <li key={i} className="truncate">
-                              {p}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    </div>
-                  )}
-              </div>
-            </div>
-          ) : null}
-        </CardContent>
-      </Card>
-
-      {/* Job Description */}
-      <Card>
-        <CardHeader>
-          <CardTitle>
-            Job Description
-            {jdStatus === "success" && (
-              <span className="ml-2 inline-flex items-center gap-1 text-sm font-normal text-emerald-600">
-                <CheckCircle2 className="h-4 w-4" />
-                Analyzed
-              </span>
-            )}
-          </CardTitle>
-          <CardDescription>
-            Paste the job description you're preparing for.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <textarea
-            value={jobDescription}
-            onChange={(e) => setJobDescription(e.target.value)}
-            className="w-full min-h-[120px] rounded-lg border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-y"
-            placeholder="Paste the job description here..."
-          />
-
-          {jdStatus === "analyzing" ? (
-            <div className="flex items-center gap-2 rounded-lg border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 text-primary animate-spin" />
-              Analyzing job description with AI...
-            </div>
-          ) : jdStatus === "error" ? (
-            <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
-              <AlertCircle className="h-4 w-4 shrink-0" />
-              <span>{jdError}</span>
-            </div>
-          ) : null}
-
-          {jdStatus === "success" && parsedJd ? (
-            <div className="space-y-4">
-              {/* Analyzed data summary */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {parsedJd.role && (
-                  <div className="flex items-start gap-2 rounded-lg border bg-background p-3">
-                    <Briefcase className="h-4 w-4 text-primary mt-0.5 shrink-0" />
-                    <div className="min-w-0">
-                      <p className="text-xs text-muted-foreground">Role</p>
-                      <p className="text-sm font-medium truncate">
-                        {parsedJd.role}
-                      </p>
-                    </div>
-                  </div>
-                )}
-                {parsedJd.seniority && (
-                  <div className="flex items-start gap-2 rounded-lg border bg-background p-3">
-                    <TrendingUp className="h-4 w-4 text-primary mt-0.5 shrink-0" />
-                    <div className="min-w-0">
-                      <p className="text-xs text-muted-foreground">Seniority</p>
-                      <p className="text-sm font-medium truncate">
-                        {parsedJd.seniority}
-                      </p>
-                    </div>
-                  </div>
-                )}
-                {parsedJd.required_skills &&
-                  parsedJd.required_skills.length > 0 && (
-                    <div className="flex items-start gap-2 rounded-lg border bg-background p-3 sm:col-span-2">
-                      <Star className="h-4 w-4 text-primary mt-0.5 shrink-0" />
-                      <div className="min-w-0 flex-1">
-                        <p className="text-xs text-muted-foreground mb-1">
-                          Required Skills
-                        </p>
-                        <div className="flex flex-wrap gap-1.5">
-                          {parsedJd.required_skills.map((skill, i) => (
-                            <span
-                              key={i}
-                              className="inline-block rounded-full bg-primary/10 px-2.5 py-0.5 text-xs font-medium text-primary"
-                            >
-                              {skill}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                {parsedJd.nice_to_have_skills &&
-                  parsedJd.nice_to_have_skills.length > 0 && (
-                    <div className="flex items-start gap-2 rounded-lg border bg-background p-3 sm:col-span-2">
-                      <Sparkles className="h-4 w-4 text-muted-foreground mt-0.5 shrink-0" />
-                      <div className="min-w-0 flex-1">
-                        <p className="text-xs text-muted-foreground mb-1">
-                          Nice-to-have Skills
-                        </p>
-                        <div className="flex flex-wrap gap-1.5">
-                          {parsedJd.nice_to_have_skills.map((skill, i) => (
-                            <span
-                              key={i}
-                              className="inline-block rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground"
-                            >
-                              {skill}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                {parsedJd.responsibilities &&
-                  parsedJd.responsibilities.length > 0 && (
-                    <div className="flex items-start gap-2 rounded-lg border bg-background p-3 sm:col-span-2">
-                      <ListChecks className="h-4 w-4 text-primary mt-0.5 shrink-0" />
-                      <div className="min-w-0 flex-1">
-                        <p className="text-xs text-muted-foreground mb-1">
-                          Responsibilities
-                        </p>
-                        <ul className="text-sm list-disc list-inside space-y-0.5">
-                          {parsedJd.responsibilities.map((r, i) => (
-                            <li key={i}>{r}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    </div>
-                  )}
-              </div>
-              <button
-                onClick={resetJdAnalysis}
-                className="text-xs text-muted-foreground hover:text-foreground underline"
-              >
-                Analyze again
-              </button>
-            </div>
-          ) : (
-            <Button
-              onClick={handleAnalyzeJobDescription}
-              disabled={!jobDescription.trim()}
-              className="gap-2"
-            >
-              <Wand2 className="h-4 w-4" />
-              Analyze Job Description
-            </Button>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Job Posting URL */}
-      <Card>
-        <CardHeader>
-          <CardTitle>
-            Job Posting URL
-            {urlStatus === "success" && (
-              <span className="ml-2 inline-flex items-center gap-1 text-sm font-normal text-emerald-600">
-                <CheckCircle2 className="h-4 w-4" />
-                Imported
-              </span>
-            )}
-          </CardTitle>
-          <CardDescription>
-            Paste a job posting URL and the AI will fetch the details
-            automatically.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {/* URL Input + Import Button */}
-          {(urlStatus === "idle" || urlStatus === "error") && (
-            <div className="flex gap-2">
-              <div className="relative flex-1">
-                <Link className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                <input
-                  type="url"
-                  value={jobUrl}
-                  onChange={(e) => setJobUrl(e.target.value)}
-                  placeholder="https://example.com/jobs/software-engineer"
-                  className="w-full rounded-lg border border-input bg-background pl-9 pr-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                />
-              </div>
-              <Button
-                onClick={handleImportFromUrl}
-                disabled={!jobUrl.trim()}
-                className="gap-2 shrink-0"
-              >
-                <Globe className="h-4 w-4" />
-                Import
-              </Button>
-            </div>
-          )}
-
-          {/* URL error */}
-          {urlStatus === "error" && urlError && (
-            <div className="flex items-center justify-between gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
-              <div className="flex items-center gap-2">
-                <AlertCircle className="h-4 w-4 shrink-0" />
-                <span>{urlError}</span>
-              </div>
-              <button
-                onClick={() => setUrlStatus("idle")}
-                className="text-xs underline hover:text-foreground shrink-0"
-              >
-                Try again
-              </button>
-            </div>
-          )}
-
-          {/* Importing state */}
-          {urlStatus === "importing" && (
-            <div className="flex items-center gap-2 rounded-lg border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 text-primary animate-spin" />
-              <span>Fetching job details from URL...</span>
-            </div>
-          )}
-
-          {/* Import results */}
-          {urlStatus === "success" && urlResult && (
-            <div className="space-y-3">
-              {/* Company info */}
-              {urlResult.companyName && (
-                <div className="flex items-start gap-2 rounded-lg border bg-background p-3">
-                  <Building2 className="h-4 w-4 text-primary mt-0.5 shrink-0" />
-                  <div className="min-w-0 flex-1">
-                    <p className="text-xs text-muted-foreground">Company</p>
-                    <p className="text-sm font-medium">{urlResult.companyName}</p>
-                    {urlResult.companyOverview && (
-                      <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
-                        {urlResult.companyOverview}
+                    </dl>
+                    {(jobUrl.trim() || jobDescription.trim()) && (
+                      <p className="mt-5 line-clamp-3 text-xs leading-5 text-muted-foreground">
+                        {jobUrl.trim() || jobDescription.trim()}
                       </p>
                     )}
                   </div>
+                  <p className="text-sm leading-6 text-muted-foreground">
+                    On the next step you&apos;ll enter the room. We&apos;ll prepare the
+                    interviewer from this context before you connect your speakers.
+                  </p>
                 </div>
               )}
 
-              {/* Tech stack */}
-              {urlResult.techStack.length > 0 && (
-                <div className="flex items-start gap-2 rounded-lg border bg-background p-3">
-                  <Cpu className="h-4 w-4 text-primary mt-0.5 shrink-0" />
-                  <div className="min-w-0 flex-1">
-                    <p className="text-xs text-muted-foreground mb-1.5">
-                      Tech Stack
+              {currentStep === 3 && (
+                <div className="animate-fade-up space-y-7">
+                  <div className="rounded-xl border border-border bg-muted/25 p-5 sm:p-6">
+                    <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                      Room briefing
                     </p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {urlResult.techStack.map((tech, i) => (
-                        <span
-                          key={i}
-                          className="inline-block rounded-full bg-primary/5 border border-primary/15 px-2.5 py-0.5 text-xs font-medium text-primary"
-                        >
-                          {tech}
-                        </span>
-                      ))}
+                    <div className="mt-5 grid gap-5 sm:grid-cols-2">
+                      <div>
+                        <p className="text-xs text-muted-foreground">Experience</p>
+                        <p className="mt-1 text-sm font-medium">
+                          {fileName || "Not provided"}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-muted-foreground">Opportunity</p>
+                        <p className="mt-1 text-sm font-medium">
+                          {jobUrl.trim()
+                            ? "Fetch from URL"
+                            : jobDescription.trim()
+                              ? "From pasted description"
+                              : "Not provided"}
+                        </p>
+                      </div>
                     </div>
                   </div>
+
+                  {!hasContext && (
+                    <div className="flex items-start gap-2 text-sm text-muted-foreground">
+                      <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                      Add a resume or target role before entering the interview.
+                    </div>
+                  )}
+
+                  <Button
+                    size="lg"
+                    onClick={handleEnterRoom}
+                    disabled={!hasContext}
+                    className="w-full gap-2 sm:w-auto"
+                  >
+                    <DoorOpen className="h-4 w-4" />
+                    Enter the room
+                  </Button>
                 </div>
               )}
+            </div>
 
-              {/* Action buttons */}
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={resetUrlImport}
-                  className="text-xs text-muted-foreground hover:text-foreground underline"
+            {currentStep < 3 && (
+              <div className="flex items-center justify-between border-t border-border bg-muted/20 px-6 py-4 sm:px-9">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => setCurrentStep((step) => Math.max(0, step - 1))}
+                  disabled={currentStep === 0}
+                  className="gap-1.5"
                 >
-                  Import different URL
-                </button>
-                {urlResult.jobDescription && (
-                  <span className="text-xs text-muted-foreground">
-                    Job description filled in below
-                  </span>
-                )}
+                  <ChevronLeft className="h-4 w-4" />
+                  Back
+                </Button>
+                <Button
+                  type="button"
+                  onClick={() => setCurrentStep((step) => Math.min(3, step + 1))}
+                  disabled={!canMoveForward}
+                  className="gap-1.5"
+                >
+                  {currentStep === 0 && !resumeFilePath
+                    ? "Continue without resume"
+                    : currentStep === 1 && !jobUrl.trim() && !jobDescription.trim()
+                      ? "Continue without role"
+                      : "Continue"}
+                  <ChevronRight className="h-4 w-4" />
+                </Button>
               </div>
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Generate Interview Plan */}
-      <Card>
-        <CardHeader>
-          <CardTitle>
-            Interview Plan
-            {planStatus === "generating" && (
-              <span className="ml-2 inline-flex items-center gap-1 text-sm font-normal text-muted-foreground">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                Generating...
-              </span>
             )}
-          </CardTitle>
-          <CardDescription>
-            Generate a tailored interview plan with questions based on your
-            resume and job description.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {/* Plan generation error */}
-          {planStatus === "error" && planError && (
-            <div className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
-              <AlertCircle className="h-4 w-4 shrink-0" />
-              <span>{planError}</span>
-            </div>
-          )}
-
-          {/* Generating state */}
-          {planStatus === "generating" ? (
-            <div className="rounded-lg border bg-muted/40 p-8 text-center">
-              <Loader2 className="h-8 w-8 mx-auto text-primary mb-4 animate-spin" />
-              <p className="text-sm font-medium">
-                Generating your interview plan...
-              </p>
-              <p className="text-xs text-muted-foreground mt-1">
-                The AI is creating recruiter, behavioral, technical, and
-                follow-up questions tailored to your profile.
-              </p>
-            </div>
-          ) : (
-            <div className="flex flex-col sm:flex-row gap-3">
-              <Button
-                size="lg"
-                onClick={handleGeneratePlan}
-                disabled={
-                  !parsedResume && !parsedJd
-                }
-                className="gap-2 flex-1"
-              >
-                <BookOpen className="h-4 w-4" />
-                Generate Interview Plan
-              </Button>
-              <Button
-                variant="outline"
-                size="lg"
-                onClick={handleStart}
-                disabled={
-                  !parsedResume && !parsedJd
-                }
-                className="gap-2"
-              >
-                <Send className="h-4 w-4" />
-                Skip to Interview
-              </Button>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+          </div>
+        </main>
+      </div>
     </div>
   );
 }

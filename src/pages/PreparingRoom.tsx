@@ -1,115 +1,232 @@
-import { useEffect, useState, useRef } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
+import { AlertCircle, CheckCircle2, RefreshCw } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { PresenceOrb, Waveform } from "@/components/studio/StudioPrimitives";
+import {
+  buildPrepStages,
+  runInterviewPreparation,
+  type PrepStage,
+  type PrepStageId,
+  type SetupPayload,
+} from "@/lib/prepareInterview";
 
-type Stage = "connecting" | "planning" | "ready";
+const ACTIVE_COPY: Record<PrepStageId, string> = {
+  parse_resume: "Reading your experience…",
+  fetch_job: "Opening the posting…",
+  analyze_job: "Understanding the role…",
+  create_plan: "Building the interview strategy…",
+};
+
+function formatPrepError(raw: string): string {
+  if (/429|quota|resource.?exhausted|rate.?limit/i.test(raw)) {
+    return "The AI provider is temporarily rate-limited. Wait a moment, then tap Retry.";
+  }
+  // Collapse noisy JSON blobs into a short readable line
+  const cleaned = raw
+    .replace(/\s+/g, " ")
+    .replace(/\{[\s\S]*$/, "")
+    .trim();
+  if (cleaned.length > 0 && cleaned.length < 180) return cleaned;
+  return raw.length > 160 ? `${raw.slice(0, 160).trim()}…` : raw;
+}
 
 export default function PreparingRoom() {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
-  const interviewId = searchParams.get("id");
-  const mounted = useRef(true);
-  const [stage, setStage] = useState<Stage>("connecting");
-  const [progress, setProgress] = useState(0);
+  const location = useLocation();
+  const payload = location.state as SetupPayload | null;
 
-  useEffect(() => {
-    return () => {
-      mounted.current = false;
-    };
-  }, []);
+  const initialStages = useMemo(
+    () => (payload ? buildPrepStages(payload) : []),
+    [payload],
+  );
 
-  // Simulate the preparation pipeline
-  useEffect(() => {
-    const steps: { label: Stage; duration: number; target: number }[] = [
-      { label: "connecting", duration: 1200, target: 33 },
-      { label: "planning", duration: 1800, target: 75 },
-      { label: "ready", duration: 800, target: 100 },
-    ];
+  const [stages, setStages] = useState<PrepStage[]>(initialStages);
+  const [activeId, setActiveId] = useState<PrepStageId | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [ready, setReady] = useState(false);
+  const runIdRef = useRef(0);
 
-    let stepIndex = 0;
-    let startTime = Date.now();
+  const hasContext =
+    Boolean(payload?.resumeFilePath) ||
+    Boolean(payload?.jobUrl?.trim()) ||
+    Boolean(payload?.jobDescription?.trim());
 
-    const tick = () => {
-      if (!mounted.current) return;
+  const run = async () => {
+    if (!payload || !hasContext) return;
 
-      const step = steps[stepIndex];
-      if (!step) return;
+    const runId = ++runIdRef.current;
+    setError(null);
+    setReady(false);
+    setStages(buildPrepStages(payload));
+    setActiveId(null);
 
-      const elapsed = Date.now() - startTime;
-      const pct = Math.min(elapsed / step.duration, 1);
-      const eased = 1 - Math.pow(1 - pct, 3); // ease-out cubic
-      const currentProgress = Math.round(
-        (stepIndex > 0 ? steps[stepIndex - 1].target : 0) +
-          eased * (step.target - (stepIndex > 0 ? steps[stepIndex - 1].target : 0))
-      );
-      setProgress(Math.min(currentProgress, 100));
-      setStage(step.label);
+    try {
+      const plan = await runInterviewPreparation(payload, (next, active) => {
+        if (runId !== runIdRef.current) return;
+        setStages(next);
+        setActiveId(active);
+      });
 
-      if (pct < 1) {
-        requestAnimationFrame(tick);
-      } else {
-        stepIndex++;
-        if (stepIndex < steps.length) {
-          startTime = Date.now();
-          requestAnimationFrame(tick);
-        } else {
-          // All done — navigate to session
-          const sessionId = interviewId || crypto.randomUUID();
-          navigate(`/session/${sessionId}`, { replace: true });
-        }
-      }
-    };
+      if (runId !== runIdRef.current) return;
 
-    requestAnimationFrame(tick);
-  }, [navigate, interviewId]);
-
-  const stageMessages: Record<Stage, { icon: string; title: string; description: string }> = {
-    connecting: {
-      icon: "📡",
-      title: "Connecting to studio",
-      description: "Waking up the AI interviewer and establishing a secure connection\u2026",
-    },
-    planning: {
-      icon: "🧠",
-      title: "Preparing your interview",
-      description: "Analysing the role and tailoring questions to your background\u2026",
-    },
-    ready: {
-      icon: "🎙️",
-      title: "Almost ready",
-      description: "Your private interview room is ready\u2014get comfortable.",
-    },
+      setReady(true);
+      setActiveId(null);
+      await new Promise((r) => setTimeout(r, 900));
+      if (runId !== runIdRef.current) return;
+      navigate("/session/1", { state: { plan }, replace: true });
+    } catch (err) {
+      if (runId !== runIdRef.current) return;
+      setError(err instanceof Error ? err.message : "Something went wrong.");
+    }
   };
 
-  const current = stageMessages[stage];
+  useEffect(() => {
+    if (!payload || !hasContext) return;
+    void run();
+    return () => {
+      runIdRef.current += 1;
+    };
+    // Intentionally run once on mount for this payload
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  if (!payload || !hasContext) {
+    return (
+      <div className="mx-auto flex min-h-[70vh] max-w-lg flex-col items-center justify-center px-6 text-center">
+        <p className="font-display text-3xl tracking-tight">Nothing to prepare yet</p>
+        <p className="mt-3 text-sm leading-6 text-muted-foreground">
+          Add a resume or target role in the preparation room first.
+        </p>
+        <Button className="mt-8" onClick={() => navigate("/setup")}>
+          Back to preparation
+        </Button>
+      </div>
+    );
+  }
+
+  const headline = ready
+    ? "The room is ready"
+    : error
+      ? "Preparation paused"
+      : activeId
+        ? ACTIVE_COPY[activeId]
+        : "Preparing the room…";
 
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center px-4">
-      <div className="w-full max-w-sm text-center">
-        {/* Animated icon */}
-        <div className="mb-6">
-          <span className="inline-block text-4xl transition-all duration-500">
-            {stage === "ready" ? "🎙️" : "📡"}
-          </span>
-        </div>
+    <div className="relative mx-auto flex min-h-[78vh] max-w-2xl flex-col items-center justify-center px-6 py-16">
+      <div className="pointer-events-none absolute inset-0 -z-10 overflow-hidden">
+        <div className="absolute left-1/2 top-[18%] h-64 w-64 -translate-x-1/2 rounded-full bg-primary/8 blur-3xl animate-breathe" />
+        <div className="absolute left-[18%] top-[42%] h-1.5 w-1.5 animate-drift rounded-full bg-primary/25" />
+        <div className="absolute right-[22%] top-[28%] h-1 w-1 animate-drift rounded-full bg-foreground/20 [animation-delay:1.2s]" />
+      </div>
 
-        {/* Stage title */}
-        <h1 className="mb-2 text-xl font-semibold tracking-tight">
-          {current.title}
-        </h1>
-        <p className="mb-8 text-sm text-muted-foreground">
-          {current.description}
+      <div className="animate-fade-up flex flex-col items-center text-center">
+        <p className="mb-6 text-xs font-semibold uppercase tracking-[0.22em] text-primary">
+          Entering the room
         </p>
 
-        {/* Progress bar */}
-        <div className="mb-4 h-1.5 w-full overflow-hidden rounded-full bg-secondary">
-          <div
-            className="h-full rounded-full bg-primary transition-[width] duration-300 ease-out"
-            style={{ width: `${progress}%` }}
-          />
-        </div>
+        <PresenceOrb active={!error} size="lg" />
 
-        <p className="text-xs text-muted-foreground/60">{progress}%</p>
+        <h1 className="font-display mt-10 text-3xl tracking-tight sm:text-4xl">
+          {headline}
+        </h1>
+        <p className="mt-3 max-w-md text-sm leading-6 text-muted-foreground">
+          {ready
+            ? "Connecting you with your interviewer."
+            : error
+              ? "One of the preparation steps needs attention before we continue."
+              : "Your interviewer is studying the context you provided."}
+        </p>
+
+        <div className="mt-8 text-primary/70">
+          <Waveform active={!error && !ready} bars={22} className="h-7" />
+        </div>
       </div>
+
+      <ol className="mt-14 w-full max-w-md space-y-0">
+        {stages.map((stage, index) => {
+          const isActive = stage.status === "active";
+          const isDone = stage.status === "done";
+          const isError = stage.status === "error";
+          return (
+            <li key={stage.id} className="relative flex gap-4 pb-8 last:pb-0">
+              {index < stages.length - 1 && (
+                <span
+                  className={`absolute left-[11px] top-7 h-[calc(100%-1.25rem)] w-px ${
+                    isDone ? "bg-primary/40" : "bg-border"
+                  }`}
+                  aria-hidden
+                />
+              )}
+              <span
+                className={`relative z-10 mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border text-[10px] font-semibold transition-colors ${
+                  isDone
+                    ? "border-primary/40 bg-accent text-primary"
+                    : isActive
+                      ? "border-primary bg-primary text-primary-foreground"
+                      : isError
+                        ? "border-destructive/50 bg-destructive/10 text-destructive"
+                        : "border-border bg-card text-muted-foreground"
+                }`}
+              >
+                {isDone ? (
+                  <CheckCircle2 className="h-3.5 w-3.5" />
+                ) : isError ? (
+                  <AlertCircle className="h-3.5 w-3.5" />
+                ) : (
+                  index + 1
+                )}
+              </span>
+              <div className="min-w-0 pt-0.5 text-left">
+                <p
+                  className={`text-sm font-semibold ${
+                    isActive || isDone
+                      ? "text-foreground"
+                      : isError
+                        ? "text-destructive"
+                        : "text-muted-foreground"
+                  }`}
+                >
+                  {stage.label}
+                </p>
+                <p
+                  className={`mt-0.5 text-xs leading-5 ${
+                    isActive ? "text-foreground/70" : "text-muted-foreground"
+                  }`}
+                >
+                  {stage.detail}
+                </p>
+                {isActive && (
+                  <span className="mt-2 inline-block h-0.5 w-16 overflow-hidden rounded-full bg-border">
+                    <span className="block h-full w-full origin-left animate-prep-progress rounded-full bg-primary" />
+                  </span>
+                )}
+              </div>
+            </li>
+          );
+        })}
+      </ol>
+
+      {error && (
+        <div className="mt-10 w-full max-w-md animate-fade-up space-y-4 rounded-xl border border-destructive/25 bg-destructive/5 px-5 py-5 text-left">
+          <div className="flex items-start gap-2.5">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+            <p className="min-w-0 flex-1 break-words text-sm leading-6 text-destructive">
+              {formatPrepError(error)}
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2 pt-1">
+            <Button size="sm" onClick={() => void run()} className="gap-1.5">
+              <RefreshCw className="h-3.5 w-3.5" />
+              Retry
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => navigate("/setup")}>
+              Back to setup
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
