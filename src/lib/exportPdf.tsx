@@ -3,6 +3,7 @@ import type {
   InterviewAnalysis,
   InterviewPlanData,
   ChatMessage,
+  ModelAnswer,
 } from "./interview";
 
 /* ── Styles ────────────────────────────────────────────── */
@@ -15,6 +16,8 @@ const COLORS = {
   text: "#1a202c",
   textMuted: "#a0aec0",
   emerald: "#059669",
+  emeraldLight: "#ecfdf5",
+  emeraldBorder: "#a7f3d0",
   amber: "#d97706",
   white: "#ffffff",
   bgLight: "#f7fafc",
@@ -177,6 +180,78 @@ const styles = StyleSheet.create({
     color: COLORS.text,
   },
 
+  /* Model answers */
+  modelAnswerItem: {
+    marginBottom: 18,
+    paddingBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  modelAnswerHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 7,
+  },
+  modelAnswerIndex: {
+    fontSize: 10,
+    fontWeight: 700,
+    color: COLORS.textMuted,
+    marginRight: 8,
+  },
+  modelAnswerCategory: {
+    fontSize: 7,
+    fontWeight: 700,
+    color: COLORS.muted,
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 10,
+  },
+  modelAnswerQuestion: {
+    fontSize: 11,
+    fontWeight: 700,
+    color: COLORS.text,
+    lineHeight: 1.5,
+    marginBottom: 9,
+  },
+  userAnswerBlock: {
+    backgroundColor: COLORS.bgLight,
+    padding: 10,
+    borderRadius: 4,
+    marginBottom: 8,
+  },
+  answerLabel: {
+    fontSize: 7,
+    fontWeight: 700,
+    color: COLORS.muted,
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+    marginBottom: 4,
+  },
+  answerText: {
+    fontSize: 9,
+    lineHeight: 1.6,
+    color: COLORS.text,
+  },
+  modelAnswerBlock: {
+    borderWidth: 1,
+    borderColor: COLORS.emeraldBorder,
+    backgroundColor: COLORS.emeraldLight,
+    padding: 10,
+    borderRadius: 4,
+  },
+  modelAnswerLabel: {
+    fontSize: 7,
+    fontWeight: 700,
+    color: COLORS.emerald,
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+    marginBottom: 4,
+  },
+
   /* Footer */
   footer: {
     position: "absolute",
@@ -217,6 +292,7 @@ interface ReportPdfProps {
   conversation: ChatMessage[];
   analysis: InterviewAnalysis | null;
   durationSeconds?: number;
+  modelAnswers?: ModelAnswer[] | null;
 }
 
 function ReportDocument({
@@ -224,6 +300,7 @@ function ReportDocument({
   conversation,
   analysis,
   durationSeconds,
+  modelAnswers,
 }: ReportPdfProps) {
   const totalExchanges = Math.floor(conversation.length / 2);
 
@@ -374,6 +451,68 @@ function ReportDocument({
           fixed
         />
       </Page>
+
+      {/* Page 2+ — How you could have answered */}
+      {modelAnswers && modelAnswers.length > 0 && (
+        <Page size="A4" style={styles.page} wrap>
+          {/* Header */}
+          <View style={styles.header}>
+            <View style={styles.headerLeft}>
+              <Text style={styles.brand}>InterviewLab</Text>
+              <Text style={styles.brandSub}>Mock Interview Report</Text>
+            </View>
+            <View style={styles.headerRight}>
+              <Text style={styles.roleLabel}>
+                {plan.target_role || "Practice Interview"}
+              </Text>
+              <Text style={styles.metaText}>How you could have answered</Text>
+            </View>
+          </View>
+
+          <Text style={styles.sectionTitle}>
+            How you could have answered
+          </Text>
+          <View style={styles.sectionDivider} />
+
+          {modelAnswers.map((item, i) => (
+            <View key={i} style={styles.modelAnswerItem}>
+              <View style={styles.modelAnswerHeader}>
+                <Text style={styles.modelAnswerIndex}>
+                  {String(i + 1).padStart(2, "0")}
+                </Text>
+                <Text style={styles.modelAnswerCategory}>
+                  {item.category.replace(/_/g, " ")}
+                </Text>
+              </View>
+
+              <Text style={styles.modelAnswerQuestion}>
+                “{item.question}”
+              </Text>
+
+              {item.userAnswer.trim() && (
+                <View style={styles.userAnswerBlock}>
+                  <Text style={styles.answerLabel}>Your answer</Text>
+                  <Text style={styles.answerText}>{item.userAnswer}</Text>
+                </View>
+              )}
+
+              <View style={styles.modelAnswerBlock}>
+                <Text style={styles.modelAnswerLabel}>A stronger answer</Text>
+                <Text style={styles.answerText}>{item.modelAnswer}</Text>
+              </View>
+            </View>
+          ))}
+
+          {/* Page number */}
+          <Text
+            style={styles.pageNumber}
+            render={({ pageNumber, totalPages }) =>
+              `${pageNumber} / ${totalPages}`
+            }
+            fixed
+          />
+        </Page>
+      )}
     </Document>
   );
 }
@@ -389,6 +528,7 @@ export async function downloadPdfReport(
   conversation: ChatMessage[],
   analysis: InterviewAnalysis | null,
   durationSeconds?: number,
+  modelAnswers?: ModelAnswer[] | null,
 ): Promise<void> {
   const blob = await pdf(
     <ReportDocument
@@ -396,6 +536,7 @@ export async function downloadPdfReport(
       conversation={conversation}
       analysis={analysis}
       durationSeconds={durationSeconds}
+      modelAnswers={modelAnswers}
     />,
   ).toBlob();
 

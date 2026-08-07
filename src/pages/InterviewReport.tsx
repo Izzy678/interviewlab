@@ -74,7 +74,7 @@ export default function InterviewReport() {
     setPdfStatus("generating");
     try {
       const { downloadPdfReport } = await import("@/lib/exportPdf");
-      await downloadPdfReport(plan, conversation, analysis, durationSeconds);
+      await downloadPdfReport(plan, conversation, analysis, durationSeconds, modelAnswers);
     } catch (err) {
       console.error("Failed to generate PDF", err);
     } finally {
