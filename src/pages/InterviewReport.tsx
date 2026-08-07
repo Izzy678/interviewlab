@@ -18,13 +18,16 @@ import {
   formatDuration,
   downloadText,
   formatTranscript,
+  generateModelAnswers,
   type InterviewAnalysis,
   type ChatMessage,
   type InterviewPlanData,
+  type ModelAnswer,
 } from "@/lib/interview";
 import {
   fetchSession,
   updateSessionAnalysis,
+  updateSessionModelAnswers,
 } from "@/lib/sessions";
 
 type ReportState = {
@@ -58,6 +61,10 @@ export default function InterviewReport() {
 
   const [analysis, setAnalysis] = useState<InterviewAnalysis | null>(null);
   const [analysisStatus, setAnalysisStatus] = useState<
+    "idle" | "loading" | "ready" | "error"
+  >("idle");
+  const [modelAnswers, setModelAnswers] = useState<ModelAnswer[] | null>(null);
+  const [modelAnswersStatus, setModelAnswersStatus] = useState<
     "idle" | "loading" | "ready" | "error"
   >("idle");
   const [pdfStatus, setPdfStatus] = useState<"idle" | "generating">("idle");
@@ -107,6 +114,10 @@ export default function InterviewReport() {
           setAnalysis(row.analysis);
           setAnalysisStatus("ready");
         }
+        if (row.model_answers && Array.isArray(row.model_answers) && row.model_answers.length > 0) {
+          setModelAnswers(row.model_answers);
+          setModelAnswersStatus("ready");
+        }
         setLoadStatus("ready");
       })
       .catch(() => {
@@ -145,6 +156,34 @@ export default function InterviewReport() {
     durationSeconds,
     sessionId,
     analysisStatus,
+  ]);
+
+  useEffect(() => {
+    if (loadStatus !== "ready" || !plan || conversation.length < 2) return;
+    if (modelAnswersStatus === "ready" || modelAnswersStatus === "loading") return;
+
+    setModelAnswersStatus("loading");
+    generateModelAnswers(plan, conversation)
+      .then(async (result) => {
+        setModelAnswers(result.answers);
+        setModelAnswersStatus("ready");
+        if (sessionId && result.answers.length > 0) {
+          try {
+            await updateSessionModelAnswers(sessionId, result.answers);
+          } catch (err) {
+            console.error("Failed to persist model answers", err);
+          }
+        }
+      })
+      .catch(() => {
+        setModelAnswersStatus("error");
+      });
+  }, [
+    loadStatus,
+    plan,
+    conversation,
+    sessionId,
+    modelAnswersStatus,
   ]);
 
   const handlePracticeAgain = () => {
@@ -333,6 +372,91 @@ export default function InterviewReport() {
             </div>
           </section>
         </div>
+      )}
+
+      {(modelAnswersStatus === "loading" ||
+        modelAnswersStatus === "ready" ||
+        modelAnswersStatus === "error") && (
+        <section className="border-b border-border/70 py-12 md:py-16">
+          <div className="grid gap-8 md:grid-cols-[180px_1fr]">
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+              How you could have answered
+            </p>
+            <div>
+              {modelAnswersStatus === "loading" && (
+                <div className="flex min-h-[180px] flex-col items-center justify-center gap-4 text-center">
+                  <div className="flex h-12 w-12 items-center justify-center rounded-full border border-border bg-muted/30">
+                    <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                  </div>
+                  <p className="text-sm text-muted-foreground">
+                    Drafting stronger answers grounded in your resume…
+                  </p>
+                </div>
+              )}
+
+              {modelAnswersStatus === "error" && (
+                <div className="flex items-center gap-3 text-sm text-muted-foreground">
+                  <AlertCircle className="h-5 w-5 shrink-0 text-destructive" />
+                  <span>
+                    We couldn&apos;t draft model answers right now — your
+                    transcript is still available below.
+                  </span>
+                </div>
+              )}
+
+              {modelAnswersStatus === "ready" &&
+                (!modelAnswers || modelAnswers.length === 0) && (
+                  <p className="text-sm leading-6 text-muted-foreground">
+                    There weren&apos;t enough substantive questions in this
+                    session to draft model answers. Run a longer interview and
+                    they&apos;ll appear here.
+                  </p>
+                )}
+
+              {modelAnswersStatus === "ready" && modelAnswers && (
+                <div className="space-y-10">
+                  {modelAnswers.map((item, i) => (
+                    <article key={i} className="space-y-5">
+                      <div>
+                        <div className="flex items-center gap-3">
+                          <span className="font-heading text-sm tabular-nums text-muted-foreground/50">
+                            {String(i + 1).padStart(2, "0")}
+                          </span>
+                          <span className="rounded-full border border-border/70 px-2.5 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                            {item.category}
+                          </span>
+                        </div>
+                        <p className="mt-3 font-heading text-lg leading-snug tracking-tight">
+                          “{item.question}”
+                        </p>
+                      </div>
+
+                      {item.userAnswer.trim() && (
+                        <div className="rounded-xl bg-muted/40 p-5">
+                          <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+                            Your answer
+                          </p>
+                          <p className="mt-2.5 whitespace-pre-wrap text-sm leading-6 text-muted-foreground">
+                            {item.userAnswer}
+                          </p>
+                        </div>
+                      )}
+
+                      <div className="rounded-xl border border-emerald-600/20 bg-emerald-600/[0.04] p-5">
+                        <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-emerald-700">
+                          A stronger answer
+                        </p>
+                        <p className="mt-2.5 whitespace-pre-wrap text-sm leading-6 text-foreground/80">
+                          {item.modelAnswer}
+                        </p>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
       )}
 
       <details className="group border-b border-border/70 py-8">

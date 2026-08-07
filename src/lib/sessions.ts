@@ -3,6 +3,7 @@ import type {
   ChatMessage,
   InterviewAnalysis,
   InterviewPlanData,
+  ModelAnswer,
 } from "@/lib/interview";
 
 export interface InterviewSessionRow {
@@ -15,6 +16,7 @@ export interface InterviewSessionRow {
   conversation: ChatMessage[];
   duration_seconds: number | null;
   analysis: InterviewAnalysis | null;
+  model_answers: ModelAnswer[] | null;
   created_at: string;
   completed_at: string | null;
 }
@@ -68,6 +70,20 @@ export async function updateSessionAnalysis(
 
   if (error) {
     throw new Error(error.message || "Failed to save interview analysis");
+  }
+}
+
+export async function updateSessionModelAnswers(
+  sessionId: string,
+  modelAnswers: ModelAnswer[],
+): Promise<void> {
+  const { error } = await supabase
+    .from("interview_sessions")
+    .update({ model_answers: modelAnswers })
+    .eq("id", sessionId);
+
+  if (error) {
+    throw new Error(error.message || "Failed to save model answers");
   }
 }
 

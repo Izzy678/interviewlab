@@ -78,6 +78,24 @@ export interface InterviewAnalysis {
   improvements: string[];
 }
 
+/** A single Q&A from the report's "How you could have answered" section. */
+export interface ModelAnswer {
+  /** The interviewer's question, verbatim (cleaned). */
+  question: string;
+  /** recruiter | behavioral | technical | follow_up */
+  category: "recruiter" | "behavioral" | "technical" | "follow_up";
+  /** The candidate's actual answer from the conversation (may be empty). */
+  userAnswer: string;
+  /** First-person, resume-grounded model answer (3–6 sentences). */
+  modelAnswer: string;
+}
+
+export interface ModelAnswersResult {
+  answers: ModelAnswer[];
+  /** How many interviewer turns were skipped as non-questions (greeting/wrap-up). */
+  skipped: number;
+}
+
 /* ── Helpers ────────────────────────────────────────────── */
 
 /** Build a minimal plan with empty sections (used for "Skip to Interview"). */
@@ -210,4 +228,35 @@ export async function analyzeInterview(
     throw new Error(error.message || "Failed to analyze the interview.");
   }
   return data as InterviewAnalysis;
+}
+
+/**
+ * Call the generate-model-answers Edge Function to get first-person,
+ * resume-grounded model answers for every substantive question asked.
+ */
+export async function generateModelAnswers(
+  plan: InterviewPlanData,
+  conversation: ChatMessage[],
+  resumeSummary?: Record<string, unknown>,
+): Promise<ModelAnswersResult> {
+  const { data, error } = await supabase.functions.invoke(
+    "generate-model-answers",
+    {
+      method: "POST",
+      body: { plan, conversation, resumeSummary },
+    },
+  );
+
+  if (error) {
+    const payload = data as { error?: string; details?: string } | null;
+    const details = [payload?.error, payload?.details]
+      .filter(Boolean)
+      .join(" — ");
+    const base = details || error.message || "Failed to generate model answers.";
+    const friendly = /rate.?limit|429|quota|resource.?exhausted/i.test(base)
+      ? `Model answers are temporarily rate-limited. Wait a few seconds, then try again. (${base.slice(0, 160)})`
+      : base;
+    throw new Error(friendly);
+  }
+  return (data as ModelAnswersResult) || { answers: [], skipped: 0 };
 }
