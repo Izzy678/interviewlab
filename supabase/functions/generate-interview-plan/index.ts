@@ -4,7 +4,7 @@ import {
   extractJsonObject,
   isValidJson,
   requireGeminiKey,
-} from "../shared/gemini";
+} from "../_shared/gemini.ts";
 
 interface ResumeData {
   parsed_name?: string;
@@ -39,6 +39,14 @@ interface InterviewPlanSection {
   questions: InterviewQuestion[];
 }
 
+interface InterviewBriefingResponse {
+  focus_skills: string[];
+  resume_gap: {
+    skill: string;
+    note: string;
+  } | null;
+}
+
 interface InterviewPlanResponse {
   candidate_name: string;
   target_role: string;
@@ -51,6 +59,7 @@ interface InterviewPlanResponse {
     follow_up_questions: InterviewPlanSection;
   };
   preparation_tips: string[];
+  briefing: InterviewBriefingResponse;
 }
 
 const corsHeaders = {
@@ -193,7 +202,11 @@ Deno.serve(async (req: Request) => {
       `    "technical_questions": { "title": "...", "description": "...", "questions": [/* same shape, category technical */] },`,
       `    "follow_up_questions": { "title": "...", "description": "...", "questions": [/* same shape, category follow_up */] }`,
       `  },`,
-      `  "preparation_tips": ["Tip 1", "Tip 2", "Tip 3"]`,
+      `  "preparation_tips": ["Tip 1", "Tip 2", "Tip 3"],`,
+      `  "briefing": {`,
+      `    "focus_skills": ["Skill 1", "Skill 2", "Skill 3"],`,
+      `    "resume_gap": { "skill": "Skill name", "note": "One short sentence about the gap" }`,
+      `  }`,
       `}`,
       "",
       "RULES:",
@@ -205,6 +218,9 @@ Deno.serve(async (req: Request) => {
       "- expected_answer_points: 2 short bullets each",
       "- context: one short sentence",
       "- preparation_tips: exactly 3 tips",
+      "- briefing.focus_skills: exactly 3 of the most important required skills from the job description (or fall back to the role's core skills if no JD was provided)",
+      "- briefing.resume_gap: pick ONE required skill from the job description that is NOT clearly evident in the candidate's resume. Set to null when the resume already covers the required skills well.",
+      "- briefing.resume_gap.note: one short, specific sentence (e.g. \"Your resume lists Python but not SQL, which this role requires daily.\")",
       "- Do not invent data. Use empty string or empty array for missing fields.",
       "- Output complete valid JSON only — no markdown, no trailing commentary.",
     ].join("\n");
@@ -272,6 +288,17 @@ Deno.serve(async (req: Request) => {
         technical_questions: { title: "Technical Questions", description: "", questions: [] },
         follow_up_questions: { title: "Follow-Up Questions", description: "", questions: [] },
       };
+    }
+    if (!plan.briefing || !Array.isArray(plan.briefing.focus_skills)) {
+      plan.briefing = {
+        focus_skills: (jobData?.required_skills || []).slice(0, 3),
+        resume_gap: null,
+      };
+    } else {
+      plan.briefing.focus_skills = (plan.briefing.focus_skills || []).slice(0, 3);
+      if (!plan.briefing.resume_gap || !plan.briefing.resume_gap.skill) {
+        plan.briefing.resume_gap = null;
+      }
     }
 
     // Save to database (async, non-blocking)

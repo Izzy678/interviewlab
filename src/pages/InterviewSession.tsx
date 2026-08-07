@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/common/EmptyState";
+import { BriefingCard } from "@/components/interview/BriefingCard";
 import {
   PresenceOrb,
   StageLabel,
@@ -459,6 +460,11 @@ export default function InterviewSession() {
 
   /* ── Idle overlay (start screen) ── */
   if (phase === "idle") {
+    const hasBriefing = Boolean(
+      plan.briefing &&
+        (plan.briefing.focus_skills.length > 0 || plan.briefing.resume_gap),
+    );
+
     /* ── Helper: render one check row ── */
     const CheckRow = ({
       icon,
@@ -518,13 +524,14 @@ export default function InterviewSession() {
 
     return (
       <div
-        className={`fixed inset-0 z-40 flex min-h-screen items-center justify-center overflow-hidden bg-[#111210] p-5 text-[#f2f1ec] ${
+        className={`fixed inset-0 z-40 overflow-y-auto bg-[#111210] p-5 text-[#f2f1ec] ${
           fromPreparing ? "animate-fade-in" : ""
         }`}
       >
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_42%,rgba(255,255,255,0.075),transparent_34%)]" />
-        <div className="relative w-full max-w-lg text-center">
-          <StageLabel active className="mb-10 text-white/50">
+        <div className="relative flex min-h-full items-center justify-center">
+          <div className="w-full max-w-lg text-center">
+            <StageLabel active className="mb-10 text-white/50">
             Room ready
           </StageLabel>
           <div className="mb-7 flex justify-center">
@@ -539,8 +546,18 @@ export default function InterviewSession() {
           </p>
           <Waveform
             active={false}
-            className="mx-auto my-10 max-w-xs text-white/45"
+            className="mx-auto mb-6 mt-10 max-w-xs text-white/45"
           />
+
+          {/* ── Pre-join briefing card ── */}
+          {hasBriefing && (
+            <div className="mb-8 flex justify-center">
+              <BriefingCard
+                role={plan.target_role}
+                briefing={plan.briefing!}
+              />
+            </div>
+          )}
 
           {/* ── Check panel ── */}
           <div
@@ -604,6 +621,7 @@ export default function InterviewSession() {
                 ? "Use microphone instead"
                 : "Use text instead"}
             </button>
+          </div>
           </div>
         </div>
       </div>

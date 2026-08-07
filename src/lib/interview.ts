@@ -18,6 +18,17 @@ export interface InterviewPlanSection {
   questions: InterviewQuestion[];
 }
 
+export interface InterviewBriefing {
+  /** 3 key JD skills the interview will focus on. */
+  focus_skills: string[];
+  /** One skill the JD requires but the resume doesn't clearly show (or null). */
+  resume_gap: {
+    skill: string;
+    /** One short sentence describing the gap. */
+    note: string;
+  } | null;
+}
+
 export interface InterviewPlanData {
   candidate_name: string;
   target_role: string;
@@ -30,6 +41,8 @@ export interface InterviewPlanData {
     follow_up_questions: InterviewPlanSection;
   };
   preparation_tips: string[];
+  /** Pre-join briefing summary (may be absent for plans created before this feature). */
+  briefing?: InterviewBriefing;
 }
 
 export interface ChatMessage {
