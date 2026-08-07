@@ -80,14 +80,14 @@ export function HeroSection() {
                     Speaking
                   </p>
                 </div>
-                <Waveform className="w-full text-primary" bars={22} />
+                <Waveform active={true} barCount={22} className="w-full text-primary" />
               </div>
 
               <div className="flex flex-col px-5 py-6 sm:px-7">
                 <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-b border-border/70 pb-4">
-                  <StageLabel>Introduction</StageLabel>
-                  <StageLabel active>Experience</StageLabel>
-                  <StageLabel>Scenario</StageLabel>
+                  <StageLabel phase="awaiting" label="Introduction" />
+                  <StageLabel phase="speaking" label="Experience" />
+                  <StageLabel phase="awaiting" label="Scenario" />
                 </div>
 
                 <div className="flex-1 space-y-6 py-7">
