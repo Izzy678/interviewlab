@@ -74,7 +74,7 @@ export function HeroSection() {
                   <h2 className="mt-1 font-display text-2xl">Mara</h2>
                 </div>
                 <div className="my-7">
-                  <PresenceOrb size="lg" />
+                  <PresenceOrb state="present" />
                   <p className="mt-5 flex items-center justify-center gap-2 text-xs font-medium">
                     <span className="h-1.5 w-1.5 animate-breathe rounded-full bg-primary" />
                     Speaking
