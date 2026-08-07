@@ -3,7 +3,7 @@
  * Prefer Gemini for all AI work — OpenRouter is rate-limited on free tier.
  */
 
-const DEFAULT_MODEL = "gemini-2.5-flash";
+const DEFAULT_MODEL = "gemini-3.1-flash-lite";
 
 export function geminiModel(): string {
   return Deno.env.get("GEMINI_MODEL") || DEFAULT_MODEL;
