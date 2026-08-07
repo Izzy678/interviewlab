@@ -43,4 +43,29 @@ export default defineConfig(() => ({
     allowedHosts: true as const,
     hmr: false,
   },
+  build: {
+    // Reduce memory pressure in constrained environments
+    sourcemap: false,
+    minify: 'esbuild',
+    // Smaller chunk limit to avoid large memory allocations
+    chunkSizeWarningLimit: 1000,
+    rollupOptions: {
+      output: {
+        // Reduce memory via smaller chunk sizes
+        manualChunks(id) {
+          if (id.includes('node_modules')) {
+            // Check major deps BEFORE the catch-all
+            if (id.includes('react')) return 'vendor-react';
+            if (id.includes('@supabase')) return 'vendor-supabase';
+            if (id.includes('react-router')) return 'vendor-router';
+            if (id.includes('lucide-react')) return 'vendor-icons';
+            // Catch-all for everything else in node_modules
+            return 'vendor';
+          }
+        },
+      },
+    },
+    // Reduce CSS processing memory
+    cssMinify: 'esbuild',
+  },
 }))
