@@ -7,9 +7,9 @@ import {
 import {
   Card,
   CardContent,
+  CardDescription,
   CardHeader,
   CardTitle,
-  CardDescription,
 } from "@/components/ui/card";
 
 const features = [
@@ -43,25 +43,27 @@ export function FeaturesSection() {
   return (
     <section className="py-20 md:py-28">
       <div className="container mx-auto px-4">
-        <div className="text-center mb-14">
-          <h2 className="text-3xl font-bold tracking-tight sm:text-4xl">
-            Why InterviewLab?
+        <div className="mb-14 text-center">
+          <h2 className="text-3xl font-light tracking-tight sm:text-4xl">
+            Everything you need
           </h2>
-          <p className="mt-3 text-muted-foreground text-lg max-w-xl mx-auto">
-            Everything you need to prepare thoroughly and perform confidently.
+          <p className="mx-auto mt-3 max-w-xl text-lg text-muted-foreground/70">
+            Thoughtfully designed to help you prepare, perform, and improve.
           </p>
         </div>
         <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
           {features.map((feature) => (
             <Card
               key={feature.title}
-              className="border-0 bg-muted/50 shadow-sm hover:shadow-md transition-shadow"
+              className="border bg-card shadow-sm transition-all duration-200 hover:shadow-md"
             >
               <CardHeader>
-                <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center mb-2">
+                <div className="mb-2 flex h-10 w-10 items-center justify-center rounded-lg bg-primary/5">
                   <feature.icon className="h-5 w-5 text-primary" />
                 </div>
-                <CardTitle className="text-lg">{feature.title}</CardTitle>
+                <CardTitle className="text-base font-medium">
+                  {feature.title}
+                </CardTitle>
               </CardHeader>
               <CardContent>
                 <CardDescription className="text-sm leading-relaxed">

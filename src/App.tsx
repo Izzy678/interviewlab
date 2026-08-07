@@ -7,6 +7,7 @@ import SignIn from "@/pages/SignIn";
 import SignUp from "@/pages/SignUp";
 import Dashboard from "@/pages/Dashboard";
 import InterviewSetup from "@/pages/InterviewSetup";
+import PreparingRoom from "@/pages/PreparingRoom";
 import InterviewSession from "@/pages/InterviewSession";
 import InterviewReport from "@/pages/InterviewReport";
 import InterviewPlan from "@/pages/InterviewPlan";
@@ -26,6 +27,7 @@ export default function App() {
             <Route element={<AppLayout />}>
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/setup" element={<InterviewSetup />} />
+              <Route path="/preparing" element={<PreparingRoom />} />
               <Route path="/plan" element={<InterviewPlan />} />
               <Route path="/report/:id" element={<InterviewReport />} />
             </Route>

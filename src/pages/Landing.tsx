@@ -12,12 +12,15 @@ export default function Landing() {
   return (
     <div className="min-h-screen">
       <header className="container mx-auto flex h-16 items-center justify-between px-4">
-        <div className="flex items-center gap-2 font-bold text-xl tracking-tight">
-          <span className="bg-primary text-primary-foreground rounded-lg w-8 h-8 flex items-center justify-center text-sm font-bold">
+        <Link
+          to="/"
+          className="flex items-center gap-2 text-xl font-semibold tracking-tight"
+        >
+          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-sm font-bold text-primary-foreground">
             IL
           </span>
           <span className="hidden sm:inline">InterviewLab</span>
-        </div>
+        </Link>
         <nav className="flex items-center gap-3">
           {loading ? null : user ? (
             <Button asChild>
@@ -28,7 +31,7 @@ export default function Landing() {
               <Button variant="ghost" asChild>
                 <Link to="/signin">Sign in</Link>
               </Button>
-              <Button asChild>
+              <Button asChild className="rounded-full">
                 <Link to="/signup">Get started</Link>
               </Button>
             </>
@@ -38,7 +41,7 @@ export default function Landing() {
       <HeroSection />
       <FeaturesSection />
       <CtaSection />
-      <footer className="border-t py-6 text-center text-sm text-muted-foreground">
+      <footer className="border-t py-6 text-center text-sm text-muted-foreground/60">
         &copy; {new Date().getFullYear()} InterviewLab. All rights reserved.
       </footer>
     </div>
