@@ -1,4 +1,9 @@
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import {
+  callGeminiText,
+  extractJsonObject,
+  requireGeminiKey,
+} from "../shared/gemini";
 
 interface ParsedJobDescription {
   role: string;
@@ -106,53 +111,21 @@ Deno.serve(async (req: Request) => {
       textLength: sanitizedText.length,
     });
 
-    // Try Gemini first, fall back to OpenRouter
-    const geminiKey = Deno.env.get("GEMINI_API_KEY");
-    const openRouterKey = Deno.env.get("OPENROUTER_API_KEY");
-
-    let parsed: ParsedJobDescription;
-    let rawContent = "";
-    let providerUsed = "";
-
-    if (geminiKey) {
-      try {
-        const result = await extractWithGemini(sanitizedText.slice(0, 8000), geminiKey);
-        parsed = result.parsed;
-        rawContent = result.rawContent;
-        providerUsed = "Gemini";
-        console.log("[parse-job-description] Used Gemini");
-      } catch (err) {
-        console.error("[parse-job-description] Gemini failed", err instanceof Error ? err.message : String(err));
-        if (openRouterKey) {
-          const result = await extractWithOpenRouter(sanitizedText.slice(0, 8000), openRouterKey);
-          parsed = result.parsed;
-          rawContent = result.rawContent;
-          providerUsed = "OpenRouter";
-          console.log("[parse-job-description] Used OpenRouter (Gemini fallback)");
-        } else {
-          throw err;
-        }
-      }
-    } else if (openRouterKey) {
-      const result = await extractWithOpenRouter(sanitizedText.slice(0, 8000), openRouterKey);
-      parsed = result.parsed;
-      rawContent = result.rawContent;
-      providerUsed = "OpenRouter";
-      console.log("[parse-job-description] Used OpenRouter");
-    } else {
-      throw new Error("No AI provider configured. Set GEMINI_API_KEY or OPENROUTER_API_KEY.");
-    }
-
-    console.log("[parse-job-description]", providerUsed, "parsed", parsed);
+    // Gemini only — do not fall back to rate-limited OpenRouter
+    requireGeminiKey();
+    const { parsed, rawContent } = await extractWithGemini(
+      sanitizedText.slice(0, 8000),
+    );
+    console.log("[parse-job-description] Used Gemini", parsed);
 
     if (isEmptyParsed(parsed)) {
       return jsonResponse(
         {
-          error: providerUsed + " returned empty job description fields",
+          error: "Gemini returned empty job description fields",
           details:
             "The model could not find role/skills/responsibilities in the provided text.",
           parsed,
-          openRouterRaw: rawContent.slice(0, 1500),
+          geminiRaw: rawContent.slice(0, 1500),
           textPreview: sanitizedText.slice(0, 400),
         },
         422,
@@ -183,7 +156,7 @@ Deno.serve(async (req: Request) => {
               ? stringifyErr.message
               : "stringify failed",
           parsed,
-          openRouterRaw: rawContent.slice(0, 1500),
+          geminiRaw: rawContent.slice(0, 1500),
           textPreview: sanitizedText.slice(0, 400),
         },
         500,
@@ -227,7 +200,7 @@ Deno.serve(async (req: Request) => {
           insertStatus: insertRes.status,
           insertError,
           parsed,
-          openRouterRaw: rawContent.slice(0, 1500),
+          geminiRaw: rawContent.slice(0, 1500),
           textPreview: sanitizedText.slice(0, 400),
         },
         500,
@@ -243,7 +216,7 @@ Deno.serve(async (req: Request) => {
           error: "Insert succeeded but response was not JSON",
           details: insertText.slice(0, 300),
           parsed,
-          openRouterRaw: rawContent.slice(0, 1500),
+          geminiRaw: rawContent.slice(0, 1500),
           textPreview: sanitizedText.slice(0, 400),
         },
         500,
@@ -254,7 +227,7 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({
       jobDescription: jdRecord,
       parsed,
-      openRouterRaw: rawContent.slice(0, 1500),
+      geminiRaw: rawContent.slice(0, 1500),
       textPreview: sanitizedText.slice(0, 400),
     });
   } catch (err) {
@@ -264,11 +237,8 @@ Deno.serve(async (req: Request) => {
   }
 });
 
-/* ── AI Provider callers ──────────────────────────────── */
-
 async function extractWithGemini(
   text: string,
-  apiKey: string,
 ): Promise<{ parsed: ParsedJobDescription; rawContent: string }> {
   const systemMessage =
     "You are a job description parsing assistant. Extract structured data from job descriptions. Always respond with valid JSON only, no markdown formatting.";
@@ -292,122 +262,24 @@ async function extractWithGemini(
     text,
   ].join("\n");
 
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        system_instruction: { parts: [{ text: systemMessage }] },
-        contents: [{ parts: [{ text: userMessage }] }],
-        generation_config: { maxOutputTokens: 1500, temperature: 0.1 },
-      }),
-    },
-  );
-
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error("Gemini API error: " + res.status + " - " + err);
-  }
-
-  const data = await res.json();
-  const content = data.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
-
-  return { parsed: normalizeParsedJson(content), rawContent: content };
-}
-
-async function extractWithOpenRouter(
-  text: string,
-  apiKey: string,
-): Promise<{ parsed: ParsedJobDescription; rawContent: string }> {
-  const model = Deno.env.get("OPENROUTER_MODEL") || "openrouter/free";
-
-  const systemMessage =
-    "You are a job description parsing assistant. Extract structured data from job descriptions. Always respond with valid JSON only, no markdown formatting.";
-
-  const userMessage = [
-    "Extract structured information from the following job description.",
-    "",
-    "Return ONLY valid JSON with these exact fields:",
-    "{",
-    '  "role": "Job title / role name",',
-    '  "seniority": "Seniority level (e.g. Entry Level, Mid Level, Senior, Staff, Principal, Lead, Manager, Intern)",',
-    '  "required_skills": ["List of required / must-have skills, technologies, and qualifications"],',
-    '  "nice_to_have_skills": ["List of nice-to-have / preferred skills and qualifications"],',
-    '  "responsibilities": ["List of key job responsibilities and day-to-day tasks"]',
-    "}",
-    "",
-    "If a field cannot be determined, use an empty string or empty array as appropriate.",
-    "Do not invent data that is not present in the job description.",
-    "",
-    "JOB DESCRIPTION:",
-    text,
-  ].join("\n");
-
-  console.log("[OpenRouter] request", {
-    model,
-    textLength: text.length,
-    textPreview: text.slice(0, 200),
-  });
-
-  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-      "HTTP-Referer": "https://interviewlab.app",
-      "X-Title": "InterviewLab",
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: "system", content: systemMessage },
-        { role: "user", content: userMessage },
-      ],
-      temperature: 0.1,
-      max_tokens: 1500,
-    }),
-  });
-
-  if (!response.ok) {
-    const errBody = await response.text();
-    console.error("[OpenRouter] API error", {
-      status: response.status,
-      body: errBody.slice(0, 1000),
-    });
-    throw new Error(
-      "OpenRouter API error: " + response.status + " - " + errBody.slice(0, 500),
-    );
-  }
-
-  const data: { choices: { message: { content: string } }[] } = await response.json();
-  const content = data.choices?.[0]?.message?.content || "{}";
-
-  console.log("[OpenRouter] raw response meta", {
-    model,
-    choices: data.choices?.length ?? 0,
-    contentPreview: content.slice(0, 500),
-    contentLength: content.length,
+  const content = await callGeminiText({
+    system: systemMessage,
+    user: userMessage,
+    maxOutputTokens: 1500,
+    temperature: 0.1,
   });
 
   return { parsed: normalizeParsedJson(content), rawContent: content };
 }
 
 function normalizeParsedJson(rawContent: string): ParsedJobDescription {
-  const jsonStr = rawContent
-    .replace(/```json\n?/g, "")
-    .replace(/```\n?/g, "")
-    .trim();
+  const jsonStr = extractJsonObject(rawContent);
 
   let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(jsonStr);
   } catch {
-    const match = jsonStr.match(/\{[\s\S]*\}/);
-    if (!match) {
-      throw new Error("AI returned invalid JSON: " + jsonStr.slice(0, 200));
-    }
-    parsed = JSON.parse(match[0]);
+    throw new Error("AI returned invalid JSON: " + jsonStr.slice(0, 200));
   }
 
   const asString = (v: unknown) =>

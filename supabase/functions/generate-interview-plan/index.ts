@@ -1,4 +1,10 @@
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import {
+  callGeminiText,
+  extractJsonObject,
+  isValidJson,
+  requireGeminiKey,
+} from "../shared/gemini";
 
 interface ResumeData {
   parsed_name?: string;
@@ -155,7 +161,7 @@ Deno.serve(async (req: Request) => {
     const targetLevelStr = targetLevel || "Mid Level";
 
     const userMessage = [
-      `Generate a comprehensive interview plan for a ${targetLevelStr} position.`,
+      `Generate a focused interview plan for a ${targetLevelStr} position.`,
       "",
       resumeSection,
       "",
@@ -166,41 +172,41 @@ Deno.serve(async (req: Request) => {
       `  "candidate_name": "Candidate's name from resume",`,
       `  "target_role": "Job title from the job description",`,
       `  "target_seniority": "${targetLevelStr}",`,
-      `  "overall_difficulty": "One of: Easy, Medium, Hard, Very Hard — based on the candidate's experience vs job requirements gap",`,
+      `  "overall_difficulty": "One of: Easy, Medium, Hard, Very Hard",`,
       `  "sections": {`,
       `    "recruiter_questions": {`,
       `      "title": "Recruiter / Screening Questions",`,
-      `      "description": "Brief description of this section",`,
+      `      "description": "Brief description",`,
       `      "questions": [`,
       `        {`,
       `          "id": "r1",`,
       `          "question": "The full question text",`,
       `          "category": "recruiter",`,
       `          "difficulty": "easy|medium|hard",`,
-      `          "focus_area": "What skill/area this tests",`,
-      `          "expected_answer_points": ["Key point 1", "Key point 2"],`,
-      `          "context": "Optional context about why this question is relevant to this candidate"`,
+      `          "focus_area": "What this tests",`,
+      `          "expected_answer_points": ["Point 1", "Point 2"],`,
+      `          "context": "Why relevant to this candidate"`,
       `        }`,
       `      ]`,
       `    },`,
-      `    "behavioral_questions": { ... same structure ..., "category": "behavioral" },`,
-      `    "technical_questions": { ... same structure ..., "category": "technical" },`,
-      `    "follow_up_questions": { ... same structure ..., "category": "follow_up" }`,
+      `    "behavioral_questions": { "title": "...", "description": "...", "questions": [/* same shape, category behavioral */] },`,
+      `    "technical_questions": { "title": "...", "description": "...", "questions": [/* same shape, category technical */] },`,
+      `    "follow_up_questions": { "title": "...", "description": "...", "questions": [/* same shape, category follow_up */] }`,
       `  },`,
       `  "preparation_tips": ["Tip 1", "Tip 2", "Tip 3"]`,
       `}`,
       "",
       "RULES:",
-      "- recruiter_questions: 3-4 questions about background, availability, salary expectations, logistics",
-      "- behavioral_questions: 4-5 STAR-method questions based on the candidate's actual experience and the job's responsibilities",
-      "- technical_questions: 5-7 questions testing the required skills, including coding/architecture/system design as appropriate",
-      "- follow_up_questions: 3-4 deeper-dive questions that build on the technical questions",
-      "- Each question's difficulty should be calibrated to the candidate's experience level vs the job's seniority",
-      "- expected_answer_points should list 2-4 concrete things a strong answer would cover",
-      "- context field: reference specific items from the resume or job description (e.g. 'Based on your React experience at Google')",
-      "- preparation_tips: 3-5 actionable tips specific to this candidate and role",
+      "- Keep the entire response under 3500 tokens. Be concise.",
+      "- recruiter_questions: exactly 3 questions",
+      "- behavioral_questions: exactly 4 questions (STAR-method)",
+      "- technical_questions: exactly 5 questions",
+      "- follow_up_questions: exactly 3 questions",
+      "- expected_answer_points: 2 short bullets each",
+      "- context: one short sentence",
+      "- preparation_tips: exactly 3 tips",
       "- Do not invent data. Use empty string or empty array for missing fields.",
-      "- Keep questions realistic and specific — avoid generic questions that don't relate to the candidate or role.",
+      "- Output complete valid JSON only — no markdown, no trailing commentary.",
     ].join("\n");
 
     console.log(
@@ -208,82 +214,54 @@ Deno.serve(async (req: Request) => {
       { userId: user.id },
     );
 
-    // Try providers: Gemini → OpenRouter
-    const geminiKey = Deno.env.get("GEMINI_API_KEY");
-    const openRouterKey = Deno.env.get("OPENROUTER_API_KEY");
+    // Gemini only — disable thinking so the full JSON fits in the output budget
+    requireGeminiKey();
+    let rawContent = await callGeminiText({
+      system: systemMessage,
+      user: userMessage,
+      maxOutputTokens: 8192,
+      temperature: 0.2,
+      thinkingBudget: 0,
+      jsonMode: true,
+    });
+    console.log("[generate-interview-plan] Used Gemini", {
+      chars: rawContent.length,
+    });
 
-    if (!geminiKey && !openRouterKey) {
-      return jsonResponse({
-        error: "No AI provider configured",
-        details: "Set GEMINI_API_KEY or OPENROUTER_API_KEY secret.",
-      }, 503);
-    }
-
-    const providers: { name: string; call: () => Promise<string> }[] = [];
-
-    if (geminiKey) {
-      providers.push({
-        name: "Gemini",
-        call: () => callGemini(systemMessage, userMessage, geminiKey),
+    // One repair pass if the first reply was truncated / invalid JSON
+    if (!isValidJson(rawContent)) {
+      console.warn(
+        "[generate-interview-plan] Invalid/truncated JSON — requesting repair",
+      );
+      rawContent = await callGeminiText({
+        system:
+          "You repair truncated JSON. Return ONLY the completed valid JSON object. No markdown.",
+        user: [
+          "The following interview-plan JSON was cut off. Complete it to valid JSON matching the schema (candidate_name, target_role, target_seniority, overall_difficulty, sections with recruiter_questions/behavioral_questions/technical_questions/follow_up_questions, preparation_tips). Keep question counts small if needed.",
+          "",
+          "TRUNCATED JSON:",
+          rawContent.slice(0, 6000),
+        ].join("\n"),
+        maxOutputTokens: 8192,
+        temperature: 0,
+        thinkingBudget: 0,
+        jsonMode: true,
       });
     }
-    if (openRouterKey) {
-      providers.push({
-        name: "OpenRouter",
-        call: () =>
-          callOpenRouter(
-            systemMessage,
-            userMessage,
-            openRouterKey,
-            Deno.env.get("OPENROUTER_MODEL") || "openrouter/free",
-          ),
-      });
-    }
 
-    let lastError: Error | null = null;
-    let rawContent = "";
-    let providerUsed = "";
-
-    for (const provider of providers) {
-      try {
-        rawContent = await provider.call();
-        providerUsed = provider.name;
-        console.log("[generate-interview-plan] Used provider", provider.name);
-        break;
-      } catch (err) {
-        lastError = err instanceof Error ? err : new Error(String(err));
-        console.error(
-          `[generate-interview-plan] ${provider.name} failed`,
-          lastError.message,
-        );
-      }
-    }
-
-    if (!rawContent) {
-      throw lastError || new Error("All AI providers failed");
-    }
-
-    // Clean markdown code fences from the response
-    const jsonStr = rawContent
-      .replace(/```json\n?/g, "")
-      .replace(/```\n?/g, "")
-      .trim();
+    const jsonStr = extractJsonObject(rawContent);
 
     let plan: InterviewPlanResponse;
     try {
       plan = JSON.parse(jsonStr);
     } catch {
-      const match = jsonStr.match(/\{[\s\S]*\}/);
-      if (!match) {
-        console.error(
-          "[generate-interview-plan] could not parse JSON",
-          jsonStr.slice(0, 300),
-        );
-        throw new Error(
-          providerUsed + " returned invalid JSON: " + jsonStr.slice(0, 200),
-        );
-      }
-      plan = JSON.parse(match[0]);
+      console.error(
+        "[generate-interview-plan] could not parse JSON",
+        jsonStr.slice(0, 300),
+      );
+      throw new Error(
+        "Gemini returned invalid JSON: " + jsonStr.slice(0, 200),
+      );
     }
 
     // Ensure all required fields exist
@@ -295,16 +273,6 @@ Deno.serve(async (req: Request) => {
         follow_up_questions: { title: "Follow-Up Questions", description: "", questions: [] },
       };
     }
-
-    // Sanitize text fields
-    const sanitize = (obj: Record<string, unknown>) => {
-      for (const key of Object.keys(obj)) {
-        if (typeof obj[key] === "string") {
-          obj[key] = sanitizeText(obj[key] as string);
-        }
-      }
-      return obj;
-    };
 
     // Save to database (async, non-blocking)
     try {
@@ -343,66 +311,3 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ error: message }, 500);
   }
 });
-
-/* ── AI Provider callers ──────────────────────────────── */
-
-async function callGemini(
-  systemMessage: string,
-  userMessage: string,
-  apiKey: string,
-): Promise<string> {
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        system_instruction: { parts: [{ text: systemMessage }] },
-        contents: [{ parts: [{ text: userMessage }] }],
-        generation_config: { maxOutputTokens: 4000, temperature: 0.2 },
-      }),
-    },
-  );
-
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Gemini error ${res.status}: ${err.slice(0, 300)}`);
-  }
-
-  const data = await res.json();
-  return data.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
-}
-
-async function callOpenRouter(
-  systemMessage: string,
-  userMessage: string,
-  apiKey: string,
-  model: string,
-): Promise<string> {
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-      "HTTP-Referer": "https://interviewlab.app",
-      "X-Title": "InterviewLab",
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: "system", content: systemMessage },
-        { role: "user", content: userMessage },
-      ],
-      temperature: 0.2,
-      max_tokens: 4000,
-    }),
-  });
-
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`OpenRouter error ${res.status}: ${err.slice(0, 300)}`);
-  }
-
-  const data = await res.json();
-  return data.choices?.[0]?.message?.content || "{}";
-}

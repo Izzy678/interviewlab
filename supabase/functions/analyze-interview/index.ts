@@ -1,4 +1,9 @@
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import {
+  callGeminiText,
+  extractJsonObject,
+  requireGeminiKey,
+} from "../_shared/gemini.ts";
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -166,16 +171,6 @@ Deno.serve(async (req: Request) => {
       }, 400);
     }
 
-    const apiKey = Deno.env.get("GEMINI_API_KEY");
-    const openRouterKey = Deno.env.get("OPENROUTER_API_KEY");
-
-    if (!apiKey && !openRouterKey) {
-      return jsonResponse({
-        error: "No AI provider configured",
-        details: "Set GEMINI_API_KEY or OPENROUTER_API_KEY secret.",
-      }, 503);
-    }
-
     const systemMessage =
       "You are an expert interview coach and HR professional. " +
       "You analyze mock interview transcripts and provide detailed, honest, actionable feedback. " +
@@ -189,58 +184,17 @@ Deno.serve(async (req: Request) => {
       { userId: user.id, messageCount: conversation.length },
     );
 
-    const providers: { name: string; call: () => Promise<string> }[] = [];
+    // Gemini only — do not fall back to rate-limited OpenRouter
+    requireGeminiKey();
+    const rawContent = await callGeminiText({
+      system: systemMessage,
+      user: userMessage,
+      maxOutputTokens: 1500,
+      temperature: 0.3,
+    });
+    console.log("[analyze-interview] Used Gemini");
 
-    if (apiKey) {
-      providers.push({
-        name: "Gemini",
-        call: () => callGemini(systemMessage, userMessage, apiKey),
-      });
-    }
-    if (openRouterKey) {
-      providers.push({
-        name: "OpenRouter",
-        call: () =>
-          callOpenRouter(
-            systemMessage,
-            userMessage,
-            openRouterKey,
-            Deno.env.get("OPENROUTER_MODEL") || "openrouter/free",
-          ),
-      });
-    }
-
-    let lastError: Error | null = null;
-    let rawContent = "";
-
-    for (const provider of providers) {
-      try {
-        rawContent = await provider.call();
-        console.log("[analyze-interview] Used provider", provider.name);
-        break;
-      } catch (err) {
-        lastError = err instanceof Error ? err : new Error(String(err));
-        console.error(
-          `[analyze-interview] ${provider.name} failed`,
-          lastError.message,
-        );
-      }
-    }
-
-    if (!rawContent) {
-      throw lastError || new Error("All AI providers failed");
-    }
-
-    // Clean markdown code fences
-    let jsonStr = rawContent
-      .replace(/```json\n?/g, "")
-      .replace(/```\n?/g, "")
-      .trim();
-
-    const match = jsonStr.match(/\{[\s\S]*\}/);
-    if (match) {
-      jsonStr = match[0];
-    }
+    const jsonStr = extractJsonObject(rawContent);
 
     let analysis: InterviewAnalysis;
     try {
@@ -285,66 +239,3 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ error: message }, 500);
   }
 });
-
-/* ── AI Provider callers ──────────────────────────────── */
-
-async function callGemini(
-  systemMessage: string,
-  userMessage: string,
-  apiKey: string,
-): Promise<string> {
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        system_instruction: { parts: [{ text: systemMessage }] },
-        contents: [{ parts: [{ text: userMessage }] }],
-        generation_config: { maxOutputTokens: 1500, temperature: 0.3 },
-      }),
-    },
-  );
-
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Gemini error ${res.status}: ${err.slice(0, 300)}`);
-  }
-
-  const data = await res.json();
-  return data.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
-}
-
-async function callOpenRouter(
-  systemMessage: string,
-  userMessage: string,
-  apiKey: string,
-  model: string,
-): Promise<string> {
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-      "HTTP-Referer": "https://interviewlab.app",
-      "X-Title": "InterviewLab",
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: "system", content: systemMessage },
-        { role: "user", content: userMessage },
-      ],
-      temperature: 0.3,
-      max_tokens: 1500,
-    }),
-  });
-
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`OpenRouter error ${res.status}: ${err.slice(0, 300)}`);
-  }
-
-  const data = await res.json();
-  return data.choices?.[0]?.message?.content || "{}";
-}

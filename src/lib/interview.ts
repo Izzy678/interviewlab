@@ -159,11 +159,15 @@ export async function fetchInterviewReply(
   });
 
   if (error) {
-    const details = (data as { details?: string })?.details;
-    const errMsg = details
-      ? `${error.message}: ${details}`
-      : error.message || "Failed to reach the interviewer.";
-    throw new Error(errMsg);
+    const payload = data as { error?: string; details?: string } | null;
+    const details = [payload?.error, payload?.details]
+      .filter(Boolean)
+      .join(" — ");
+    const base = details || error.message || "Failed to reach the interviewer.";
+    const friendly = /rate.?limit|429|quota|resource.?exhausted/i.test(base)
+      ? `The interviewer is temporarily rate-limited. Wait a few seconds, then tap Retry. (${base.slice(0, 160)})`
+      : base;
+    throw new Error(friendly);
   }
   if (!data?.message) {
     throw new Error(

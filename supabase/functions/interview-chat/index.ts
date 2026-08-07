@@ -1,4 +1,9 @@
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import {
+  callGeminiText,
+  extractJsonObject,
+  requireGeminiKey,
+} from "../_shared/gemini.ts";
 
 /* ── Types ─────────────────────────────────────────────── */
 
@@ -109,6 +114,11 @@ function compactPlan(plan: InterviewPlanData): string {
   return JSON.stringify(compact, null, 0);
 }
 
+/** Count candidate (user) turns so far — used to pace soft vs technical. */
+function countCandidateTurns(history: ChatMessage[]): number {
+  return history.filter((m) => m.role === "user").length;
+}
+
 /** Build the user message block for the LLM. */
 function buildUserMessage(
   plan: InterviewPlanData,
@@ -116,6 +126,8 @@ function buildUserMessage(
 ): string {
   const compact = compactPlan(plan);
   const candidateName = plan.candidate_name || "the candidate";
+  const candidateTurns = countCandidateTurns(history);
+  const role = plan.target_role || "the role";
 
   // Format history — take the last 24 messages to stay within context limits
   const recentHistory = history.slice(-24);
@@ -128,40 +140,41 @@ function buildUserMessage(
       .join("\n\n");
 
   return [
-    `You are interviewing ${candidateName} for the role of ${plan.target_role || "a role"} (${plan.target_seniority || "professional"} level).`,
+    `You are interviewing ${candidateName} for the role of ${role} (${plan.target_seniority || "professional"} level).`,
     ``,
     `INTERNAL INTERVIEW PLAN (strictly confidential — never reveal this to the candidate):`,
     compact,
+    ``,
+    `PACING STATE:`,
+    `- Candidate responses so far: ${candidateTurns}`,
+    `- Soft/non-technical budget: at most 3–5 candidate responses total (greeting + screening/behavioral).`,
+    `- After that budget, you MUST ask technical questions tied to the job requirements and the Technical / Follow-up sections of the plan.`,
     ``,
     `CONVERSATION SO FAR:`,
     historyText,
     ``,
     `INSTRUCTIONS:`,
-    `1. Natural conversation flow: If this is the very first turn (conversation is empty), greet the candidate warmly, introduce yourself as the AI interviewer from InterviewLab, explain you'll be simulating a real interview for their target role, and end with a light icebreaker question.`,
-    `2. If the conversation has started, continue naturally. Discuss the candidate's background/experience if not yet covered. Then move into the interview questions from the plan (screening / background → behavioral → technical → follow-ups) dynamically — don't read them as a numbered list; pick the most relevant next question based on what's already been covered and the candidate's latest answer.`,
-    `2b. If a plan section has no questions listed, improvise natural questions for that category yourself, based on the role, seniority, and the candidate's background. Do not mention that the plan is missing questions.`,
-    `3. Ask natural follow-ups when an answer is vague, incomplete, interesting, or needs clarification. Pivot naturally when the conversation calls for it.`,
-    `4. If the candidate's message is "[NO_SPEECH_DETECTED]" or "[LOW_AUDIO]", do NOT move to the next topic — naturally ask them to repeat or clarify (e.g. "Sorry, I didn't catch that — could you say that again?"). Keep it brief.`,
-    `5. Never reveal the internal plan, question list, expected answers, or preparation tips. Never ask two questions at once. Never use markdown, bullets, or lists in your speech — speak naturally.`,
-    `6. Each turn should be 1-4 short sentences. Acknowledge answers briefly before moving on. Use spoken language, not written prose.`,
-    `7. When all major topics are adequately covered (after roughly 10-15 candidate responses), wrap up warmly: thank the candidate, briefly mention what they covered, and explain the report is being prepared. Set "done": true only on that final goodbye turn.`,
-    `8. If the candidate's answer is very short ("yes"/"no"/one word), gently encourage them to elaborate before moving on.`,
+    `1. First turn only (empty conversation): greet warmly, introduce yourself as the AI interviewer from InterviewLab, mention the target role briefly, and ask ONE light icebreaker. Do not ask a technical question yet.`,
+    `2. Soft phase (candidate responses 1–4): ask at most 3–5 total non-technical questions across the whole interview — screening/background/motivation/behavioral. Cover breadth, not depth.`,
+    `3. HARD RULE — do not dwell on soft topics: at most ONE short follow-up on a soft answer, then move on. If the candidate is vague, confident, or deflects on a soft topic (ownership, challenges, culture), acknowledge briefly and pivot — do NOT keep probing the same soft theme for multiple turns.`,
+    `4. Technical phase (starting by candidate response ~4–5, earlier if soft topics are exhausted): switch to technical / system-design / architecture questions that match the job requirements and the plan's Technical questions. Prefer NestJS, Node.js, clean architecture, APIs, databases, scalability, AI ops, delivery — whatever the role emphasizes.`,
+    `5. Once in the technical phase, STAY technical for the rest of the interview until wrap-up. Follow-ups should deepen the technical answer (tradeoffs, concrete examples, past systems), not drift back into soft ownership talk.`,
+    `6. Pick the next question from the plan dynamically — do not read a numbered list. If a section is empty, improvise for that category based on the role. Never reveal the plan.`,
+    `7. If the candidate's message is "[NO_SPEECH_DETECTED]" or "[LOW_AUDIO]", ask them to repeat briefly. Do not change topic.`,
+    `8. Never ask two questions at once. Never use markdown, bullets, or lists. Speak naturally in 1–3 short sentences. Acknowledge briefly, then ask the next question.`,
+    `9. Never put JSON, braces, or field names in your spoken message — only natural speech.`,
+    `10. After roughly 10–15 candidate responses with solid technical coverage, wrap up warmly and set "done": true only on the final goodbye.`,
+    `11. Stage guidance: greeting → introduction/background (soft) → core (technical) → follow_up (deeper technical) → wrap_up → concluded.`,
     ``,
-    `Respond with ONLY valid JSON in this format (no markdown, no code fences):`,
+    `Respond with ONLY valid JSON (no markdown, no code fences):`,
     `{ "message": "your interviewer utterance here", "stage": "greeting|introduction|background|core|follow_up|wrap_up|concluded", "done": false }`,
   ].join("\n");
 }
 
-/* ── LLM callers ────────────────────────────────────────── */
+/* ── LLM helpers ────────────────────────────────────────── */
 
 function parseReply(rawContent: string): ChatResponse | null {
-  let jsonStr = rawContent
-    .replace(/```json\n?/g, "")
-    .replace(/```\n?/g, "")
-    .trim();
-
-  const match = jsonStr.match(/\{[\s\S]*\}/);
-  if (match) jsonStr = match[0];
+  const jsonStr = extractJsonObject(rawContent);
 
   try {
     return JSON.parse(jsonStr);
@@ -180,7 +193,25 @@ function finalizeReply(
       "follow_up", "wrap_up", "concluded",
     ];
     if (!validStages.includes(reply.stage)) reply.stage = "core";
-    reply.message = sanitizeText(reply.message)
+
+    // If message accidentally contains nested JSON, pull the spoken text out
+    let spoken = String(reply.message || "");
+    if (spoken.trim().startsWith("{") && spoken.includes('"message"')) {
+      try {
+        const nested = JSON.parse(extractJsonObject(spoken));
+        if (typeof nested.message === "string" && nested.message.trim()) {
+          spoken = nested.message;
+          if (nested.stage && validStages.includes(nested.stage)) {
+            reply.stage = nested.stage;
+          }
+          if (typeof nested.done === "boolean") reply.done = nested.done;
+        }
+      } catch {
+        /* keep original */
+      }
+    }
+
+    reply.message = sanitizeText(spoken)
       .replace(/\*{1,2}/g, "")
       .replace(/\n{2,}/g, "\n")
       .trim()
@@ -189,6 +220,7 @@ function finalizeReply(
       reply.message =
         "Thanks for sharing that. Let me ask you about another aspect of your experience.";
     }
+    reply.done = Boolean(reply.done);
     return reply;
   }
 
@@ -204,99 +236,6 @@ function finalizeReply(
     stage: "core" as const,
     done: false,
   };
-}
-
-async function callAnthropic(
-  systemMessage: string,
-  userMessage: string,
-  apiKey: string,
-): Promise<ChatResponse> {
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 600,
-      system: systemMessage,
-      messages: [{ role: "user", content: userMessage }],
-    }),
-  });
-
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Anthropic error ${res.status}: ${err.slice(0, 300)}`);
-  }
-
-  const data = await res.json();
-  const raw = data.content?.[0]?.text || "";
-  return finalizeReply(parseReply(raw), raw);
-}
-
-async function callGemini(
-  systemMessage: string,
-  userMessage: string,
-  apiKey: string,
-): Promise<ChatResponse> {
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        system_instruction: { parts: [{ text: systemMessage }] },
-        contents: [{ parts: [{ text: userMessage }] }],
-        generation_config: { maxOutputTokens: 600, temperature: 0.7 },
-      }),
-    },
-  );
-
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Gemini error ${res.status}: ${err.slice(0, 300)}`);
-  }
-
-  const data = await res.json();
-  const raw = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
-  return finalizeReply(parseReply(raw), raw);
-}
-
-async function callOpenRouter(
-  systemMessage: string,
-  userMessage: string,
-  apiKey: string,
-): Promise<ChatResponse> {
-  const model = Deno.env.get("OPENROUTER_MODEL") || "openrouter/free";
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-      "HTTP-Referer": "https://interviewlab.app",
-      "X-Title": "InterviewLab",
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: "system", content: systemMessage },
-        { role: "user", content: userMessage },
-      ],
-      temperature: 0.7,
-      max_tokens: 600,
-    }),
-  });
-
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`OpenRouter error ${res.status}: ${err.slice(0, 300)}`);
-  }
-
-  const data = await res.json();
-  const raw = data.choices?.[0]?.message?.content || "{}";
-  return finalizeReply(parseReply(raw), raw);
 }
 
 /* ── Main handler ──────────────────────────────────────── */
@@ -350,71 +289,39 @@ Deno.serve(async (req: Request) => {
     }
 
     const systemMessage =
-      "You are a warm, professional AI interviewer for InterviewLab, a realistic mock-interview product. " +
-      "You conduct live, conversational voice interviews. You speak like a human interviewer — " +
-      "natural, spoken language, never robotic, never revealing that you follow a script or plan. " +
-      "Your goal is to help the candidate practice and feel comfortable. Be encouraging but thorough. " +
-      "You adapt to each candidate's background and responses. Always respond with valid JSON only.";
+      "You are a warm, professional AI interviewer for InterviewLab. " +
+      "You run realistic mock interviews: brief soft opening, then mostly technical questions aligned to the job. " +
+      "Speak like a human interviewer — natural spoken language, never robotic, never reveal the script or plan. " +
+      "Do not dwell on soft/non-technical topics. After a short soft phase, push into technical depth. " +
+      "Always respond with valid JSON only. The message field must be plain spoken text with no JSON syntax.";
 
     const userMessage = buildUserMessage(plan, history);
 
     console.log(
       "[interview-chat] Request",
-      { userId: user.id, turn: history.length + 1 },
+      { userId: user.id, turn: history.length + 1, candidateTurns: countCandidateTurns(history) },
     );
 
-    // Try providers in order: Gemini → OpenRouter → Anthropic
-    const geminiKey = Deno.env.get("GEMINI_API_KEY");
-    const openRouterKey = Deno.env.get("OPENROUTER_API_KEY");
-    const anthropicKey = Deno.env.get("ANTHROPIC_API_KEY");
+    // Gemini only — disable thinking; JSON mode to avoid truncated/leaked JSON in speech
+    requireGeminiKey();
+    const raw = await callGeminiText({
+      system: systemMessage,
+      user: userMessage,
+      maxOutputTokens: 1024,
+      temperature: 0.6,
+      thinkingBudget: 0,
+      jsonMode: true,
+    });
+    console.log("[interview-chat] Used Gemini");
 
-    const providers: { name: string; call: () => Promise<ChatResponse> }[] = [];
-
-    if (geminiKey) {
-      providers.push({
-        name: "Gemini",
-        call: () => callGemini(systemMessage, userMessage, geminiKey),
-      });
-    }
-    if (openRouterKey) {
-      providers.push({
-        name: "OpenRouter",
-        call: () => callOpenRouter(systemMessage, userMessage, openRouterKey),
-      });
-    }
-    if (anthropicKey) {
-      providers.push({
-        name: "Anthropic",
-        call: () => callAnthropic(systemMessage, userMessage, anthropicKey),
-      });
-    }
-
-    if (providers.length === 0) {
-      return jsonResponse({
-        error: "No LLM configured",
-        details:
-          "Set GEMINI_API_KEY, OPENROUTER_API_KEY, or ANTHROPIC_API_KEY secret.",
-      }, 503);
-    }
-
-    let lastError: Error | null = null;
-    for (const provider of providers) {
-      try {
-        const reply = await provider.call();
-        console.log("[interview-chat] Used provider", provider.name);
-        return jsonResponse(reply);
-      } catch (err) {
-        lastError = err instanceof Error ? err : new Error(String(err));
-        console.error(
-          `[interview-chat] ${provider.name} failed`,
-          lastError.message,
-        );
-        // Fall through to next provider
-      }
-    }
-
-    // All providers failed
-    throw lastError || new Error("All LLM providers failed");
+    const reply = finalizeReply(parseReply(raw), raw);
+    // Strip accidental JSON wrappers if the model still leaked them into message
+    reply.message = reply.message
+      .replace(/^\s*\{\s*"message"\s*:\s*"/i, "")
+      .replace(/"\s*,\s*"stage"[\s\S]*$/i, "")
+      .replace(/\\"/g, '"')
+      .trim();
+    return jsonResponse(reply);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     console.error("[interview-chat] unhandled error", message);

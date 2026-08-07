@@ -10,6 +10,7 @@ import {
   Send,
   MessageSquareText,
   Sparkles,
+  RefreshCw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/common/EmptyState";
@@ -75,6 +76,8 @@ export default function InterviewSession() {
   const [lastReply, setLastReply] = useState<InterviewReply | null>(null);
   const [liveCaption, setLiveCaption] = useState("");
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
+  const [canRetryInterviewer, setCanRetryInterviewer] = useState(false);
+  const [retrying, setRetrying] = useState(false);
   const [textMode, setTextMode] = useState(false);
   const [typedDraft, setTypedDraft] = useState("");
   const [confirmEnd, setConfirmEnd] = useState(false);
@@ -186,6 +189,8 @@ export default function InterviewSession() {
     if (busyRef.current || abortedRef.current) return;
     busyRef.current = true;
     setPhase("thinking");
+    setErrorBanner(null);
+    setCanRetryInterviewer(false);
 
     try {
       const reply = await fetchInterviewReply(plan!, historyRef.current);
@@ -213,12 +218,23 @@ export default function InterviewSession() {
           ? err.message
           : "Something went wrong. Please try again.";
       setErrorBanner(msg);
-      // Allow the candidate to try again
+      setCanRetryInterviewer(true);
+      // Allow the candidate to retry without losing their last answer
       setPhase("awaiting");
     } finally {
       busyRef.current = false;
+      setRetrying(false);
     }
   }, [plan, appendMessage, finishInterview, startListening]);
+
+  const retryInterviewer = useCallback(() => {
+    if (busyRef.current || retrying) return;
+    setRetrying(true);
+    setErrorBanner(null);
+    setCanRetryInterviewer(false);
+    clearError();
+    void runInterviewerTurn();
+  }, [retrying, clearError, runInterviewerTurn]);
 
   /* ── Begin the interview (after user clicks "Begin") ── */
 
@@ -266,6 +282,7 @@ export default function InterviewSession() {
           ? err.message
           : "Failed to start the interview. Please try again.";
       setErrorBanner(msg);
+      setCanRetryInterviewer(true);
       setPhase("awaiting");
     } finally {
       busyRef.current = false;
@@ -627,17 +644,33 @@ export default function InterviewSession() {
       <div className="px-4 pb-6 max-w-2xl mx-auto w-full space-y-3">
         {/* Error banner */}
         {errorBanner && (
-          <div className="flex items-center justify-between gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-2.5 text-sm text-destructive">
-            <span className="text-xs">{errorBanner}</span>
-            <button
-              onClick={() => {
-                setErrorBanner(null);
-                clearError();
-              }}
-              className="text-xs underline hover:text-foreground shrink-0 cursor-pointer"
-            >
-              Dismiss
-            </button>
+          <div className="flex items-start justify-between gap-3 rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-2.5 text-sm text-destructive">
+            <span className="text-xs leading-relaxed flex-1">{errorBanner}</span>
+            <div className="flex items-center gap-2 shrink-0">
+              {canRetryInterviewer && (
+                <button
+                  onClick={retryInterviewer}
+                  disabled={retrying || phase === "thinking"}
+                  className="inline-flex items-center gap-1.5 rounded-md bg-destructive text-destructive-foreground px-2.5 py-1 text-xs font-medium hover:bg-destructive/90 disabled:opacity-50 cursor-pointer"
+                  aria-label="Retry interviewer"
+                >
+                  <RefreshCw
+                    className={`h-3.5 w-3.5 ${retrying ? "animate-spin" : ""}`}
+                  />
+                  {retrying ? "Retrying…" : "Retry"}
+                </button>
+              )}
+              <button
+                onClick={() => {
+                  setErrorBanner(null);
+                  setCanRetryInterviewer(false);
+                  clearError();
+                }}
+                className="text-xs underline hover:text-foreground cursor-pointer"
+              >
+                Dismiss
+              </button>
+            </div>
           </div>
         )}
 
