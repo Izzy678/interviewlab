@@ -8,6 +8,7 @@ import {
   Target,
   AlertCircle,
   RotateCcw,
+  FileDown,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/common/EmptyState";
@@ -59,6 +60,20 @@ export default function InterviewReport() {
   const [analysisStatus, setAnalysisStatus] = useState<
     "idle" | "loading" | "ready" | "error"
   >("idle");
+  const [pdfStatus, setPdfStatus] = useState<"idle" | "generating">("idle");
+
+  const handleDownloadPdf = async () => {
+    if (!plan) return;
+    setPdfStatus("generating");
+    try {
+      const { downloadPdfReport } = await import("@/lib/exportPdf");
+      await downloadPdfReport(plan, conversation, analysis, durationSeconds);
+    } catch (err) {
+      console.error("Failed to generate PDF", err);
+    } finally {
+      setPdfStatus("idle");
+    }
+  };
 
   useEffect(() => {
     if (routeState?.plan && routeState.conversation) {
@@ -181,20 +196,37 @@ export default function InterviewReport() {
               ` · ${formatDuration(durationSeconds)}`}
           </p>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          className="shrink-0 gap-2 rounded-full"
-          onClick={() => {
-            downloadText(
-              formatTranscript(conversation, plan, durationSeconds),
-              `interview-${plan.target_role || "transcript"}.txt`,
-            );
-          }}
-        >
-          <Download className="h-4 w-4" />
-          Export
-        </Button>
+        <div className="flex shrink-0 items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-2 rounded-full"
+            onClick={() => {
+              downloadText(
+                formatTranscript(conversation, plan, durationSeconds),
+                `interview-${plan.target_role || "transcript"}.txt`,
+              );
+            }}
+            aria-label="Export transcript as text"
+            title="Export transcript as text"
+          >
+            <Download className="h-4 w-4" />
+            <span className="hidden sm:inline">TXT</span>
+          </Button>
+          <Button
+            size="sm"
+            className="gap-2 rounded-full"
+            onClick={handleDownloadPdf}
+            disabled={pdfStatus === "generating"}
+          >
+            {pdfStatus === "generating" ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <FileDown className="h-4 w-4" />
+            )}
+            {pdfStatus === "generating" ? "Preparing PDF…" : "Download PDF"}
+          </Button>
+        </div>
       </header>
 
       {analysisStatus === "loading" && (
